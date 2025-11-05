@@ -490,8 +490,6 @@ https://www.sciencedirect.com/science/article/pii/S2666281725000046
 2. Option to preserve case (upper/lower case) of input term.
 3. Open source the code for creating custom frequency dictionaries in any language and size as intersection between Google Books Ngram data (Provides representative word frequencies) and SCOWL Spell Checker Oriented Word Lists (Ensures genuine English vocabulary).
 
-#### First release of Rust port v6.7.3
-
 ---
 
 **SymSpell** is contributed by [**SeekStorm** - the high performance Search as a Service & search API](https://seekstorm.com)
