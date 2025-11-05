@@ -5,7 +5,7 @@ SymSpell<br>
 [![Documentation](https://docs.rs/symspell_rs/badge.svg)](https://docs.rs/symspell_rs)
 ========
 
-**Rust port of [SymSpell](https://github.com/wolfgarbe/SymSpell) originally written in C#.**
+**Rust implementation of [SymSpell](https://github.com/wolfgarbe/SymSpell) originally written in C#.**
 
 Spelling correction & Fuzzy search: **1 million times faster** through Symmetric Delete spelling correction algorithm
  

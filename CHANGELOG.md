@@ -9,4 +9,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- First release of official Rust port of SeekStorm v6.7.3
+- First release of the official Rust implementation of SymSpell v6.7.3
