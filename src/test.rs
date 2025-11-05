@@ -1,0 +1,125 @@
+#[cfg(test)]
+mod tests {
+    use crate::{SymSpell, Verbosity};
+
+    #[test]
+    fn test_lookup() {
+        let edit_distance_max = 2;
+        let mut symspell = SymSpell::new(edit_distance_max, 7, 1);
+        symspell.load_dictionary("./data/frequency_dictionary_en_82_765.txt", 0, 1, " ");
+
+        let typo = "hous";
+        let correction = "house";
+        let results = symspell.lookup(typo, Verbosity::Top, edit_distance_max);
+        assert_eq!(1, results.len());
+        assert_eq!(correction, results[0].term);
+        assert_eq!(1, results[0].distance);
+        assert_eq!(231310420, results[0].count);
+    }
+
+    #[test]
+    fn test_lookup_compound() {
+        let edit_distance_max = 2;
+        let mut symspell = SymSpell::new(edit_distance_max, 7, 1);
+        symspell.load_dictionary("./data/frequency_dictionary_en_82_765.txt", 0, 1, " ");
+
+        let typo = "whereis th elove";
+        let correction = "whereas the love";
+        let results = symspell.lookup_compound(typo, edit_distance_max);
+        assert_eq!(1, results.len());
+        assert_eq!(correction, results[0].term);
+        assert_eq!(2, results[0].distance);
+        assert_eq!(64, results[0].count);
+
+        let typo = "the bigjest playrs";
+        let correction = "the biggest players";
+        let results = symspell.lookup_compound(typo, edit_distance_max);
+        assert_eq!(1, results.len());
+        assert_eq!(correction, results[0].term);
+        assert_eq!(2, results[0].distance);
+        assert_eq!(34, results[0].count);
+
+        let typo = "Can yu readthis";
+        let correction = "can you read this";
+        let results = symspell.lookup_compound(typo, edit_distance_max);
+        assert_eq!(1, results.len());
+        assert_eq!(correction, results[0].term);
+        assert_eq!(3, results[0].distance);
+        assert_eq!(3, results[0].count);
+
+        let typo = "whereis th elove hehad dated forImuch of thepast who couqdn'tread in sixthgrade and ins pired him";
+        let correction = "whereas the love head dated for much of the past who couldn't read in sixth grade and inspired him";
+        let results = symspell.lookup_compound(typo, edit_distance_max);
+        assert_eq!(1, results.len());
+        assert_eq!(correction, results[0].term);
+        assert_eq!(9, results[0].distance);
+        assert_eq!(0, results[0].count);
+
+        let typo = "in te dhird qarter oflast jear he hadlearned ofca sekretplan";
+        let correction = "in the third quarter of last year he had learned of a secret plan";
+        let results = symspell.lookup_compound(typo, edit_distance_max);
+        assert_eq!(1, results.len());
+        assert_eq!(correction, results[0].term);
+        assert_eq!(9, results[0].distance);
+        assert_eq!(0, results[0].count);
+
+        let typo = "the bigjest playrs in te strogsommer film slatew ith plety of funn";
+        let correction = "the biggest players in the strong summer film slate with plenty of fun";
+        let results = symspell.lookup_compound(typo, edit_distance_max);
+        assert_eq!(1, results.len());
+        assert_eq!(correction, results[0].term);
+        assert_eq!(9, results[0].distance);
+        assert_eq!(0, results[0].count);
+
+        let typo = "Can yu readthis messa ge despite thehorible sppelingmsitakes";
+        let correction = "can you read this message despite the horrible spelling mistakes";
+        let results = symspell.lookup_compound(typo, edit_distance_max);
+        assert_eq!(1, results.len());
+        assert_eq!(correction, results[0].term);
+        assert_eq!(10, results[0].distance);
+        assert_eq!(0, results[0].count);
+    }
+
+    #[test]
+    fn test_lookup_compound_with_bigrams() {
+        let edit_distance_max = 2;
+        let mut symspell = SymSpell::new(edit_distance_max, 7, 1);
+        symspell.load_dictionary("./data/frequency_dictionary_en_82_765.txt", 0, 1, " ");
+        symspell.load_bigram_dictionary(
+            "./data/frequency_bigramdictionary_en_243_342.txt",
+            0,
+            2,
+            " ",
+        );
+        let typo = "Can yu readthis";
+        let correction = "can you read this";
+        let results = symspell.lookup_compound(typo, edit_distance_max);
+        assert_eq!(1, results.len());
+        assert_eq!(correction, results[0].term);
+        assert_eq!(3, results[0].distance);
+        assert_eq!(1366, results[0].count);
+    }
+
+    #[test]
+    fn test_word_segmentation() {
+        let edit_distance_max = 2;
+        let mut symspell = SymSpell::new(edit_distance_max, 7, 1);
+        symspell.load_dictionary("./data/frequency_dictionary_en_82_765.txt", 0, 1, " ");
+
+        let typo = "thequickbrownfoxjumpsoverthelazydog";
+        let correction = "the quick brown fox jumps over the lazy dog";
+        let result = symspell.word_segmentation(typo, edit_distance_max);
+        assert_eq!(correction, result.segmented_string);
+
+        let typo = "itwasabrightcolddayinaprilandtheclockswerestrikingthirteen";
+        let correction = "it was a bright cold day in april and the clocks were striking thirteen";
+        let result = symspell.word_segmentation(typo, edit_distance_max);
+        assert_eq!(correction, result.segmented_string);
+
+        let typo =
+            "itwasthebestoftimesitwastheworstoftimesitwastheageofwisdomitwastheageoffoolishness";
+        let correction = "it was the best of times it was the worst of times it was the age of wisdom it was the age of foolishness";
+        let result = symspell.word_segmentation(typo, edit_distance_max);
+        assert_eq!(correction, result.segmented_string);
+    }
+}
