@@ -2,11 +2,9 @@
 
 Spelling correction & Fuzzy search based on Symmetric Delete spelling correction algorithm.
 
-#### Usage SymSpell Library
+#### Usage of SymSpell Library
 
 ```rust
-extern crate symspell_rs;
-
 use symspell_rs::{SymSpell, Verbosity};
 
 fn main() {

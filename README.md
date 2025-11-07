@@ -172,11 +172,9 @@ __Performance:__
 
 ---
 
-#### Usage SymSpell Library
+#### Usage of SymSpell Library
 
 ```rust
-extern crate symspell;
-
 use symspell::{SymSpell, Verbosity};
 
 fn main() {
