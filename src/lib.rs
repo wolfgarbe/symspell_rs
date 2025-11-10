@@ -7,8 +7,6 @@ Spelling correction & Fuzzy search based on Symmetric Delete spelling correction
 ```rust
 use symspell_rs::{SymSpell, Verbosity};
 
-fn main() {
-
 let max_edit_distance_dictionary = 2; //maximum edit distance per dictionary precalculation
 let mut symspell: SymSpell = SymSpell::new(max_edit_distance_dictionary, 7, 1);
 
@@ -58,8 +56,6 @@ let max_edit_distance_lookup = 0;
 let result = symspell.word_segmentation(input_sentence, max_edit_distance_lookup);
 //display term and edit distance
 println!("{:?}", result.segmented_string);
-
-}
 ```
 
 */

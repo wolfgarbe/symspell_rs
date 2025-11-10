@@ -22,14 +22,20 @@ mod tests {
         let edit_distance_max = 2;
         let mut symspell = SymSpell::new(edit_distance_max, 7, 1);
         symspell.load_dictionary("./data/frequency_dictionary_en_82_765.txt", 0, 1, " ");
+        symspell.load_bigram_dictionary(
+            "./data/frequency_bigramdictionary_en_243_342.txt",
+            0,
+            2,
+            " ",
+        );
 
         let typo = "whereis th elove";
-        let correction = "whereas the love";
+        let correction = "where is the love";
         let results = symspell.lookup_compound(typo, edit_distance_max);
         assert_eq!(1, results.len());
         assert_eq!(correction, results[0].term);
         assert_eq!(2, results[0].distance);
-        assert_eq!(64, results[0].count);
+        assert_eq!(585, results[0].count);
 
         let typo = "the bigjest playrs";
         let correction = "the biggest players";
@@ -45,10 +51,10 @@ mod tests {
         assert_eq!(1, results.len());
         assert_eq!(correction, results[0].term);
         assert_eq!(3, results[0].distance);
-        assert_eq!(3, results[0].count);
+        assert_eq!(1366, results[0].count);
 
         let typo = "whereis th elove hehad dated forImuch of thepast who couqdn'tread in sixthgrade and ins pired him";
-        let correction = "whereas the love head dated for much of the past who couldn't read in sixth grade and inspired him";
+        let correction = "where is the love he had dated for much of the past who couldn't read in sixth grade and inspired him";
         let results = symspell.lookup_compound(typo, edit_distance_max);
         assert_eq!(1, results.len());
         assert_eq!(correction, results[0].term);
@@ -78,26 +84,6 @@ mod tests {
         assert_eq!(correction, results[0].term);
         assert_eq!(10, results[0].distance);
         assert_eq!(0, results[0].count);
-    }
-
-    #[test]
-    fn test_lookup_compound_with_bigrams() {
-        let edit_distance_max = 2;
-        let mut symspell = SymSpell::new(edit_distance_max, 7, 1);
-        symspell.load_dictionary("./data/frequency_dictionary_en_82_765.txt", 0, 1, " ");
-        symspell.load_bigram_dictionary(
-            "./data/frequency_bigramdictionary_en_243_342.txt",
-            0,
-            2,
-            " ",
-        );
-        let typo = "Can yu readthis";
-        let correction = "can you read this";
-        let results = symspell.lookup_compound(typo, edit_distance_max);
-        assert_eq!(1, results.len());
-        assert_eq!(correction, results[0].term);
-        assert_eq!(3, results[0].distance);
-        assert_eq!(1366, results[0].count);
     }
 
     #[test]

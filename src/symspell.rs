@@ -169,7 +169,7 @@ impl Composition {
 pub struct Suggestion {
     pub term: String,
     pub distance: i64,
-    pub count: i64,
+    pub count: usize,
 }
 
 impl Suggestion {
@@ -181,7 +181,7 @@ impl Suggestion {
         }
     }
 
-    pub fn new(term: impl Into<String>, distance: i64, count: i64) -> Suggestion {
+    pub fn new(term: impl Into<String>, distance: i64, count: usize) -> Suggestion {
         Suggestion {
             term: term.into(),
             distance,
@@ -233,7 +233,7 @@ pub struct SymSpell {
     /// The length of word prefixes used for spell checking.
     prefix_length: i64,
     /// The minimum frequency count for dictionary words to be considered correct spellings.
-    count_threshold: i64,
+    count_threshold: usize,
 
     //// number of all words in the corpus used to generate the
     //// frequency dictionary. This is used to calculate the word
@@ -241,12 +241,12 @@ pub struct SymSpell {
     //// the sum of all counts c in the dictionary only if the
     //// dictionary is complete, but not if the dictionary is
     //// truncated or filtered
-    corpus_word_count: i64,
+    corpus_word_count: usize,
     max_length: i64,
     deletes: AHashMap<u64, Vec<Box<str>>>,
-    words: AHashMap<Box<str>, i64>,
-    bigrams: AHashMap<Box<str>, i64>,
-    bigram_min_count: i64,
+    words: AHashMap<Box<str>, usize>,
+    bigrams: AHashMap<Box<str>, usize>,
+    bigram_min_count: usize,
 }
 
 impl SymSpell {
@@ -254,7 +254,7 @@ impl SymSpell {
     pub fn new(
         max_dictionary_edit_distance: i64,
         prefix_length: i64,
-        count_threshold: i64,
+        count_threshold: usize,
     ) -> Self {
         Self {
             max_dictionary_edit_distance, //2
@@ -265,7 +265,7 @@ impl SymSpell {
             deletes: AHashMap::new(),
             words: AHashMap::new(),
             bigrams: AHashMap::new(),
-            bigram_min_count: i64::MAX,
+            bigram_min_count: usize::MAX,
         }
     }
 
@@ -322,7 +322,7 @@ impl SymSpell {
         if line_parts.len() >= 2 {
             // let key = unidecode(line_parts[term_index as usize]);
             let key = line_parts[term_index as usize].to_string();
-            let count = line_parts[count_index as usize].parse::<i64>().unwrap();
+            let count = line_parts[count_index as usize].parse::<usize>().unwrap();
 
             self.create_dictionary_entry(key, count);
         }
@@ -384,7 +384,7 @@ impl SymSpell {
             } else {
                 line_parts[term_index as usize].to_string()
             };
-            let count = line_parts[count_index as usize].parse::<i64>().unwrap();
+            let count = line_parts[count_index as usize].parse::<usize>().unwrap();
             self.bigrams.insert(key.into_boxed_str(), count);
             if count < self.bigram_min_count {
                 self.bigram_min_count = count;
@@ -608,8 +608,8 @@ impl SymSpell {
         suggestions
     }
 
-    /// Find suggested spellings for a given input sentence, using the maximum
-    /// edit distance specified during construction of the SymSpell dictionary.
+    /// Find suggested spellings for a multi-word input string (supports word splitting/merging).
+    /// Returns a list of Suggestionrepresenting suggested correct spellings for the input string.
     ///
     /// # Arguments
     ///
@@ -629,20 +629,18 @@ impl SymSpell {
         //parse input string into single terms
         let term_list1 = self.parse_words(input);
 
-        // let mut suggestions_previous_term: Vec<Suggestion> = Vec::new();                  //suggestions for a single term
-        let mut suggestions: Vec<Suggestion>;
-        let mut suggestion_parts: Vec<Suggestion> = Vec::new();
+        let mut suggestions: Vec<Suggestion>; //suggestions for a single term
+        let mut suggestion_parts: Vec<Suggestion> = Vec::new(); //1 line with separate parts
 
         //translate every term to its best suggestion, otherwise it remains unchanged
         let mut last_combi = false;
-
         for (i, term) in term_list1.iter().enumerate() {
             suggestions = self.lookup(term, Verbosity::Top, edit_distance_max);
 
             //combi check, always before split
             if i > 0 && !last_combi {
                 let mut suggestions_combi: Vec<Suggestion> = self.lookup(
-                    &format!("{}{}", term_list1[i - 1], term_list1[i]),
+                    &[term_list1[i - 1].as_str(), term_list1[i].as_str()].join(""),
                     Verbosity::Top,
                     edit_distance_max,
                 );
@@ -653,20 +651,27 @@ impl SymSpell {
                         suggestions[0].clone()
                     } else {
                         Suggestion::new(
-                            term_list1[1].as_str(),
+                            //unknown word
+                            term_list1[i].as_str(),
+                            //estimated edit distance
                             edit_distance_max + 1,
-                            10 / (10i64).pow(len(&term_list1[i]) as u32),
+                            // estimated word occurrence probability P=10 / (N * 10^word length l)
+                            // estimated word count C=10 / 10^word length l
+                            // formulae to calculate the probability of an unknown word proposed by Peter Norvig in Natural Language Corpus Data, page 224 http://norvig.com/ngrams/ch14.pdf
+                            // estimated count always 0 if termlength > 3 and independent from corpus_word_count???
+                            (10f64 / 10usize.saturating_pow(len(&term_list1[i]) as u32) as f64)
+                                as usize,
                         )
                     };
 
-                    //if (suggestions_combi[0].distance + 1 < DamerauLevenshteinDistance(term_list1[i - 1] + " " + term_list1[i], best1.term + " " + best2.term))
+                    //distance1=edit distance between 2 split terms und their best corrections : as comparative value for the combination
                     let distance1 = best1.distance + best2.distance;
-
                     if (distance1 >= 0)
                         && (suggestions_combi[0].distance + 1 < distance1
                             || (suggestions_combi[0].distance + 1 == distance1
                                 && (suggestions_combi[0].count
-                                    > best1.count / self.corpus_word_count * best2.count)))
+                                    // best1 / corpus * best1 / corpus * corpus
+                                    > (best1.count as f64 / self.corpus_word_count as f64 * best2.count as f64) as usize)))
                     {
                         suggestions_combi[0].distance += 1;
                         let last_i = suggestion_parts.len() - 1;
@@ -694,16 +699,12 @@ impl SymSpell {
                 };
 
                 let term_length = len(&term_list1[i]);
-
                 if term_length > 1 {
                     for j in 1..term_length {
                         let part1 = slice(&term_list1[i], 0, j);
                         let part2 = slice(&term_list1[i], j, term_length);
-
                         let mut suggestion_split = Suggestion::empty();
-
                         let suggestions1 = self.lookup(&part1, Verbosity::Top, edit_distance_max);
-
                         if !suggestions1.is_empty() {
                             let suggestions2 =
                                 self.lookup(&part2, Verbosity::Top, edit_distance_max);
@@ -711,11 +712,12 @@ impl SymSpell {
                             if !suggestions2.is_empty() {
                                 //select best suggestion for split pair
                                 suggestion_split.term =
-                                    format!("{} {}", suggestions1[0].term, suggestions2[0].term);
+                                    [suggestions1[0].term.as_str(), suggestions2[0].term.as_str()]
+                                        .join(" ");
 
                                 let mut distance2 = damerau_levenshtein_osa(
                                     &term_list1[i],
-                                    &format!("{} {}", suggestions1[0].term, suggestions2[0].term),
+                                    &suggestion_split.term,
                                     edit_distance_max as usize,
                                 );
 
@@ -731,68 +733,56 @@ impl SymSpell {
                                         suggestion_split_best = Suggestion::empty();
                                     }
                                 }
-                                let count2: i64 = match self.bigrams.get(&*suggestion_split.term) {
-                                    Some(&bigram_frequency) => {
-                                        // increase count, if split
-                                        // corrections are part of or
-                                        // identical to input single term
-                                        // correction exists
-                                        if !suggestions.is_empty() {
-                                            let best_si = &suggestions[0];
-                                            // # alternatively remove the
-                                            // # single term from
-                                            // # suggestion_split, but then
-                                            // # other splittings could win
-                                            if suggestion_split.term == term_list1[i] {
-                                                // # make count bigger than
-                                                // # count of single term
-                                                // # correction
-                                                cmp::max(bigram_frequency, best_si.count + 2)
-                                            } else if suggestions1[0].term == best_si.term
-                                                || suggestions2[0].term == best_si.term
-                                            {
-                                                // # make count bigger than
-                                                // # count of single term
-                                                // # correction
-                                                cmp::max(bigram_frequency, best_si.count + 1)
+
+                                // bigram count vs.bigram_frequency
+                                let bigram_count: usize =
+                                    match self.bigrams.get(&*suggestion_split.term) {
+                                        Some(&bigram_frequency) => {
+                                            //increase count, if split.corrections are part of or identical to input
+                                            //single term correction exists
+                                            if !suggestions.is_empty() {
+                                                let best_si = &suggestions[0];
+                                                //alternatively remove the single term from suggestionsSplit, but then other splittings could win
+                                                if suggestion_split.term == term_list1[i] {
+                                                    //make count bigger than count of single term correction
+                                                    cmp::max(bigram_frequency, best_si.count + 2)
+                                                } else if suggestions1[0].term == best_si.term
+                                                    || suggestions2[0].term == best_si.term
+                                                {
+                                                    //make count bigger than count of single term correction
+                                                    cmp::max(bigram_frequency, best_si.count + 1)
+                                                } else {
+                                                    bigram_frequency
+                                                }
+                                            // no single term correction exists
+                                            } else if suggestion_split.term == term_list1[i] {
+                                                cmp::max(
+                                                    bigram_frequency,
+                                                    cmp::max(
+                                                        suggestions1[0].count,
+                                                        suggestions2[0].count,
+                                                    ) + 2,
+                                                )
                                             } else {
                                                 bigram_frequency
                                             }
-                                        // no single term correction exists
-                                        } else if suggestion_split.term == term_list1[i] {
-                                            cmp::max(
-                                                bigram_frequency,
-                                                cmp::max(
-                                                    suggestions1[0].count,
-                                                    suggestions2[0].count,
-                                                ) + 2,
-                                            )
-                                        } else {
-                                            bigram_frequency
                                         }
-                                    }
-                                    None => {
-                                        // The Naive Bayes probability of
-                                        // the word combination is the
-                                        // product of the two word
-                                        // probabilities: P(AB)=P(A)*P(B)
-                                        // use it to estimate the frequency
-                                        // count of the combination, which
-                                        // then is used to rank/select the
-                                        // best splitting variant
-                                        min(
-                                            self.bigram_min_count,
-                                            ((suggestions1[0].count as f64)
-                                                / (self.corpus_word_count as f64)
-                                                * (suggestions2[0].count as f64))
-                                                as i64,
-                                        )
-                                    }
-                                };
-                                suggestion_split.distance = distance2;
-                                suggestion_split.count = count2;
+                                        None => {
+                                            //The Naive Bayes probability of the word combination is the product of the two word probabilities: P(AB) = P(A) * P(B)
+                                            //use it to estimate the frequency count of the combination if no bigram in dictionary found, which then is used to rank/select the best splitting variant
+                                            min(
+                                                self.bigram_min_count,
+                                                (suggestions1[0].count as f64
+                                                    / self.corpus_word_count as f64
+                                                    * suggestions2[0].count as f64)
+                                                    as usize,
+                                            )
+                                        }
+                                    };
 
-                                //early termination of split
+                                suggestion_split.distance = distance2;
+                                suggestion_split.count = bigram_count;
+
                                 if suggestion_split_best.term.is_empty()
                                     || suggestion_split.count > suggestion_split_best.count
                                 {
@@ -807,23 +797,24 @@ impl SymSpell {
                         suggestion_parts.push(suggestion_split_best.clone());
                     } else {
                         let mut si = Suggestion::empty();
-                        // NOTE: this effectively clamps si_count to a certain minimum value, which it can't go below
-                        let si_count: f64 =
-                            10f64 / ((10i64).saturating_pow(len(&term_list1[i]) as u32)) as f64;
-
                         si.term = term_list1[i].clone();
-                        si.count = si_count as i64;
+                        // estimated word occurrence probability P=10 / (N * 10^word length l)
+                        // estimated word count C=10 / 10^word length l
+                        // formulae to calculate the probability of an unknown word proposed by Peter Norvig in Natural Language Corpus Data, page 224 http://norvig.com/ngrams/ch14.pdf
+                        // estimated count always 0 if termlength > 3 and independent from corpus_word_count???
+                        si.count =
+                            (10f64 / 10usize.saturating_pow(term_length as u32) as f64) as usize;
                         si.distance = edit_distance_max + 1;
                         suggestion_parts.push(si);
                     }
                 } else {
                     let mut si = Suggestion::empty();
-                    // NOTE: this effectively clamps si_count to a certain minimum value, which it can't go below
-                    let si_count: f64 =
-                        10f64 / ((10i64).saturating_pow(len(&term_list1[i]) as u32)) as f64;
-
                     si.term = term_list1[i].clone();
-                    si.count = si_count as i64;
+                    // estimated word occurrence probability P=10 / (N * 10^word length l)
+                    // estimated word count C=10 / 10^word length l
+                    // formulae to calculate the probability of an unknown word proposed by Peter Norvig in Natural Language Corpus Data, page 224 http://norvig.com/ngrams/ch14.pdf
+                    // estimated count always 0 if termlength > 3 and independent from corpus_word_count???
+                    si.count = (10f64 / 10usize.saturating_pow(term_length as u32) as f64) as usize;
                     si.distance = edit_distance_max + 1;
                     suggestion_parts.push(si);
                 }
@@ -842,7 +833,7 @@ impl SymSpell {
         }
 
         suggestion.term = s.trim().to_string();
-        suggestion.count = tmp_count as i64;
+        suggestion.count = tmp_count as usize;
         suggestion.distance = damerau_levenshtein_osa(input, &suggestion.term, usize::MAX);
 
         vec![suggestion]
@@ -963,7 +954,7 @@ impl SymSpell {
         true
     }
 
-    fn create_dictionary_entry<K>(&mut self, key: K, count: i64) -> bool
+    fn create_dictionary_entry<K>(&mut self, key: K, count: usize) -> bool
     where
         K: Clone + AsRef<str> + Into<String>,
     {
@@ -975,10 +966,10 @@ impl SymSpell {
 
         match self.words.get(key.as_ref()) {
             Some(i) => {
-                let updated_count = if i64::MAX - i > count {
+                let updated_count = if usize::MAX - i > count {
                     i + count
                 } else {
-                    i64::MAX
+                    usize::MAX
                 };
                 self.words.insert(key_clone, updated_count);
                 return false;
@@ -1090,7 +1081,7 @@ impl SymSpell {
             start = match char.1 {
                 //start of term
                 token if token.is_alphanumeric() => {
-                //token if regex_syntax::is_word_character(token) => {
+                    //token if regex_syntax::is_word_character(token) => {
                     if !start {
                         start_pos = char.0;
                     }
