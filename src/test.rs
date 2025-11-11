@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::{SymSpell, Verbosity};
+    use crate::{SymSpell, Verbosity, symspell::unicode_normalization_form_kc};
 
     #[test]
     fn test_lookup() {
@@ -107,5 +107,14 @@ mod tests {
         let correction = "it was the best of times it was the worst of times it was the age of wisdom it was the age of foolishness";
         let result = symspell.word_segmentation(typo, edit_distance_max);
         assert_eq!(correction, result.segmented_string);
+    }
+
+    #[test]
+    fn test_normalization() {
+        let typo = "scientiﬁc";
+        let correction = "scientific";
+        let result = unicode_normalization_form_kc(typo);
+        assert_eq!(correction, result);
+
     }
 }

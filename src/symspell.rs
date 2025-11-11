@@ -36,6 +36,7 @@ use std::cmp::Ordering;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+use unicode_normalization::UnicodeNormalization;
 #[cfg(not(all(target_feature = "aes", target_feature = "sse2")))]
 use std::sync::LazyLock;
 
@@ -119,6 +120,13 @@ pub fn damerau_levenshtein_osa(a: &str, b: &str, max_distance: usize) -> i64 {
     }
 }
 
+/// Normalize ligatures: "scientiﬁc" "ﬁelds" "ﬁnal"
+pub fn unicode_normalization_form_kc(input: &str) -> String {
+    input
+        .nfkc()  // Apply Unicode Normalization Form KC
+        .collect::<String>()              // Collect normalized chars into a String
+}
+
 fn len(s: &str) -> usize {
     s.chars().count()
 }
@@ -149,8 +157,11 @@ fn at(s: &str, i: isize) -> Option<char> {
 
 #[derive(Debug, Clone)]
 pub struct Composition {
+    // the word segmented and spelling corrected string, 
     pub segmented_string: String,
+    // the Edit distance sum between input string and corrected string, 
     pub distance_sum: i64,
+    // the Sum of word occurence probabilities in log scale (a measure of how common and probable the corrected segmentation is).
     pub prob_log_sum: f64,
 }
 
@@ -167,8 +178,11 @@ impl Composition {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Suggestion {
+    // The suggested correctly spelled word.
     pub term: String,
+    // Edit distance between searched for word and suggestion.
     pub distance: i64,
+    // Frequency of suggestion in the dictionary (a measure of how common the word is).
     pub count: usize,
 }
 
@@ -190,6 +204,7 @@ impl Suggestion {
     }
 }
 
+// Order by distance ascending, then by frequency count descending
 impl Ord for Suggestion {
     fn cmp(&self, other: &Suggestion) -> Ordering {
         let distance_cmp = self.distance.cmp(&other.distance);
@@ -228,24 +243,28 @@ pub enum Verbosity {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// SymSpell spell checker and corrector.
 pub struct SymSpell {
-    /// Maximum edit distance for doing lookups.
+    // Maximum edit distance for dictionary precalculation.
     max_dictionary_edit_distance: i64,
-    /// The length of word prefixes used for spell checking.
+    // The length of word prefixes, from which deletes are generated. (5..7).
     prefix_length: i64,
-    /// The minimum frequency count for dictionary words to be considered correct spellings.
+    // The minimum frequency count for dictionary words to be considered a valid for spelling correction.
     count_threshold: usize,
-
-    //// number of all words in the corpus used to generate the
-    //// frequency dictionary. This is used to calculate the word
-    //// occurrence probability p from word counts c : p=c/N. N equals
-    //// the sum of all counts c in the dictionary only if the
-    //// dictionary is complete, but not if the dictionary is
-    //// truncated or filtered
+    // Number of all words in the corpus used to generate the frequency dictionary
+    // this is used to calculate the word occurrence probability p from word counts c : p=c/N
+    // N equals the sum of all counts c in the dictionary only if the dictionary is complete, but not if the dictionary is truncated or filtered
     corpus_word_count: usize,
-    max_length: i64,
+    // Maximum dictionary term length
+    max_dictionary_term_length: i64,
+    // Dictionary that contains a mapping of lists of suggested correction words to the hashCodes
+    // of the original words and the deletes derived from them. Collisions of hashCodes is tolerated,
+    // because suggestions are ultimately verified via an edit distance function.
+    // A list of suggestions might have a single suggestion, or multiple suggestions. 
     deletes: AHashMap<u64, Vec<Box<str>>>,
+    // Dictionary of unique correct spelling words, and the frequency count for each word.
     words: AHashMap<Box<str>, usize>,
+    // Bigrams optionally used for improved correction quality in lookup_coompound
     bigrams: AHashMap<Box<str>, usize>,
+    // Minimum bigram count in the bigram dictionary
     bigram_min_count: usize,
 }
 
@@ -261,7 +280,7 @@ impl SymSpell {
             prefix_length,                //7
             count_threshold,              //1
             corpus_word_count: 1_024_908_267_229,
-            max_length: 0,
+            max_dictionary_term_length: 0,
             deletes: AHashMap::new(),
             words: AHashMap::new(),
             bigrams: AHashMap::new(),
@@ -426,8 +445,8 @@ impl SymSpell {
         let prep_input = (input).to_string();
         let input = prep_input.as_str();
         let input_len = len(input) as i64;
-
-        if input_len - self.max_dictionary_edit_distance > self.max_length {
+        // early termination - word is too big to possibly match any words
+        if input_len - max_edit_distance > self.max_dictionary_term_length {
             return suggestions;
         }
 
@@ -437,10 +456,15 @@ impl SymSpell {
         if self.words.contains_key(input) {
             let suggestion_count = self.words[input];
             suggestions.push(Suggestion::new(input, 0, suggestion_count));
-
+            // early termination - return exact match, unless caller wants all matches
             if verbosity != Verbosity::All {
                 return suggestions;
             }
+        }
+
+        //early termination, if we only want to check if word in dictionary or get its frequency e.g. for word segmentation
+        if max_edit_distance == 0 {
+            return suggestions;
         }
 
         hashset2.insert(input.to_string());
@@ -464,17 +488,23 @@ impl SymSpell {
             let candidate_len = len(candidate) as i64;
             let length_diff = input_prefix_len - candidate_len;
 
+            //save some time - early termination
+            //if canddate distance is already higher than suggestion distance, than there are no better suggestions to be expected
             if length_diff > max_edit_distance2 {
+                // skip to next candidate if Verbosity.All, look no further if Verbosity.Top or Closest 
+                // (candidates are ordered by delete distance, so none are closer than current)
                 if verbosity == Verbosity::All {
                     continue;
                 }
                 break;
             }
 
+            //read candidate entry from dictionary
             let hash = hash64(candidate.as_bytes());
             if self.deletes.contains_key(&hash) {
                 let dict_suggestions = &self.deletes[&hash];
 
+                //iterate through suggestions (to other correct dictionary items) of delete item and add them to suggestion list
                 for suggestion in dict_suggestions {
                     let suggestion_len = len(suggestion) as i64;
 
@@ -497,9 +527,16 @@ impl SymSpell {
                         continue;
                     }
 
+                    //Damerau-Levenshtein Edit Distance: adjust distance, if both distances>0
+                    //We allow simultaneous edits (deletes) of maxEditDistance on on both the dictionary and the input term. 
+                    //For replaces and adjacent transposes the resulting edit distance stays <= maxEditDistance.
+                    //For inserts and deletes the resulting edit distance might exceed maxEditDistance.
+                    //To prevent suggestions of a higher edit distance, we need to calculate the resulting edit distance, if there are simultaneous edits on both sides.
+                    //Example: (bank==bnak and bank==bink, but bank!=kanb and bank!=xban and bank!=baxn for maxEditDistance=1)
+                    //Two deletes on each side of a pair makes them all equal, but the first two pairs have edit distance=1, the others edit distance=2.
                     let distance;
-
                     if candidate_len == 0 {
+                        //suggestions which have no common chars with input (inputLen<=maxEditDistance && suggestionLen<=maxEditDistance)
                         distance = cmp::max(input_len, suggestion_len);
 
                         if distance > max_edit_distance2 || hashset2.contains(suggestion.as_ref()) {
@@ -518,6 +555,9 @@ impl SymSpell {
                         }
 
                         hashset2.insert(suggestion.to_string());
+                    // number of edits in prefix ==maxediddistance  AND no identic suffix,
+                    // then editdistance>maxEditDistance and no need for Levenshtein calculation  
+                    // (inputLen >= prefixLength) && (suggestionLen >= prefixLength) 
                     } else if self.has_different_suffix(
                         max_edit_distance,
                         input,
@@ -528,6 +568,7 @@ impl SymSpell {
                     ) {
                         continue;
                     } else {
+                        // DeleteInSuggestionPrefix is somewhat expensive, and only pays off when verbosity is Top or Closest.
                         if verbosity != Verbosity::All
                             && !self.delete_in_suggestion_prefix(
                                 candidate,
@@ -551,7 +592,8 @@ impl SymSpell {
                             continue;
                         }
                     }
-
+                    //save some time
+                    //do not process higher distances than those already found, if verbosity<All (note: maxEditDistance2 will always equal maxEditDistance when Verbosity::All)
                     if distance <= max_edit_distance2 {
                         let suggestion_count = self.words[suggestion];
                         let si = Suggestion::new(suggestion.as_ref(), distance, suggestion_count);
@@ -559,6 +601,7 @@ impl SymSpell {
                         if !suggestions.is_empty() {
                             match verbosity {
                                 Verbosity::Closest => {
+                                    //we will calculate DamLev distance only to the smallest found distance so far
                                     if distance < max_edit_distance2 {
                                         suggestions.clear();
                                     }
@@ -585,7 +628,12 @@ impl SymSpell {
                 }
             }
 
+            //add edits 
+            //derive edits (deletes) from candidate (input) and add them to candidates list
+            //this is a recursive process until the maximum edit distance has been reached
             if length_diff < max_edit_distance && candidate_len <= self.prefix_length {
+                //save some time
+                //do not create edits with edit distance smaller than suggestions already found
                 if verbosity != Verbosity::All && length_diff >= max_edit_distance2 {
                     continue;
                 }
@@ -601,6 +649,7 @@ impl SymSpell {
             }
         }
 
+        //sort by ascending edit distance, then by descending word frequency
         if suggestions.len() > 1 {
             suggestions.sort();
         }
@@ -610,6 +659,11 @@ impl SymSpell {
 
     /// Find suggested spellings for a multi-word input string (supports word splitting/merging).
     /// Returns a list of Suggestionrepresenting suggested correct spellings for the input string.
+    /// 
+    /// lookup_compound supports compound aware automatic spelling correction of multi-word input strings with three cases:
+    /// 1. mistakenly inserted space into a correct word led to two incorrect terms 
+    /// 2. mistakenly omitted space between two correct words led to one incorrect combined term
+    /// 3. multiple independent input terms with/without spelling errors
     ///
     /// # Arguments
     ///
@@ -734,9 +788,9 @@ impl SymSpell {
                                     }
                                 }
 
-                                // bigram count vs.bigram_frequency
                                 let bigram_count: usize =
                                     match self.bigrams.get(&*suggestion_split.term) {
+                                        //if bigram exists in bigram dictionary
                                         Some(&bigram_frequency) => {
                                             //increase count, if split.corrections are part of or identical to input
                                             //single term correction exists
@@ -841,12 +895,23 @@ impl SymSpell {
 
     /// Divides a string into words by inserting missing spaces at the appropriate positions
     ///
+    /// misspelled words can be corrected and do not affect segmentation
+    /// existing spaces are allowed and considered for optimum segmentation
+    ///
+    /// SymSpell.WordSegmentation uses a novel approach *without* recursion.
+    /// https://seekstorm.com/blog/fast-word-segmentation-noisy-text/
+    /// While each string of length n can be segmentend in 2^n−1 possible compositions https://en.wikipedia.org/wiki/Composition_(combinatorics)
+    /// word_segmentation has a linear runtime O(n) to find the optimum composition
     ///
     /// # Arguments
     ///
     /// * `input` - The word being segmented.
     /// * `max_edit_distance` - The maximum edit distance between input and suggested words.
     ///
+    /// Returns the word segmented and spelling corrected string, 
+    /// The edit distance sum between input string and corrected string, 
+    /// The sum of word occurence probabilities in log scale (a measure of how common and probable the corrected segmentation is).
+    /// 
     /// # Examples
     ///
     /// ```
@@ -857,13 +922,17 @@ impl SymSpell {
     /// symspell.word_segmentation("itwas", 2);
     /// ```
     pub fn word_segmentation(&self, input: &str, max_edit_distance: i64) -> Composition {
+
+        // Normalize ligatures: "scientiﬁc" "ﬁelds" "ﬁnal"
+        let input=&unicode_normalization_form_kc(input).replace('\u{002D}', ""); // Remove U+002D (hyphen-minus);
+
         let asize = len(input);
 
         let mut ci: usize = 0;
         let mut compositions: Vec<Composition> = vec![Composition::empty(); asize];
 
         for j in 0..asize {
-            let imax = min(asize - j, self.max_length as usize);
+            let imax = min(asize - j, self.max_dictionary_term_length as usize);
             for i in 1..=imax {
                 let mut part = slice(input, j, j + i);
 
@@ -901,7 +970,7 @@ impl SymSpell {
                         distance_sum: top_ed,
                         prob_log_sum: top_prob_log,
                     };
-                } else if i as i64 == self.max_length
+                } else if i as i64 == self.max_dictionary_term_length
                     || (((compositions[ci].distance_sum + top_ed == compositions[di].distance_sum)
                         || (compositions[ci].distance_sum + sep_len + top_ed
                             == compositions[di].distance_sum))
@@ -925,6 +994,7 @@ impl SymSpell {
         compositions[ci].to_owned()
     }
 
+    // Check whether all delete chars are present in the suggestion prefix in correct order, otherwise this is just a hash collision
     fn delete_in_suggestion_prefix(
         &self,
         delete: &str,
@@ -954,6 +1024,18 @@ impl SymSpell {
         true
     }
 
+    // Create/Update an entry in the dictionary
+    // For every word there are deletes with an edit distance of 1..maxEditDistance created and added to the
+    // dictionary. Every delete entry has a suggestions list, which points to the original term(s) it was created from.
+    // The dictionary may be dynamically updated (word frequency and new words) at any time by calling CreateDictionaryEntry
+    // # Arguments
+    //
+    // * `key` - The word to add to dictionary.
+    // * `count` - The frequency count for word.
+    //
+    // Returns True if the word was added as a new correctly spelled word,
+    // or false if the word is added as a below threshold word, or updates an
+    // existing correctly spelled word.
     fn create_dictionary_entry<K>(&mut self, key: K, count: usize) -> bool
     where
         K: Clone + AsRef<str> + Into<String>,
@@ -981,8 +1063,8 @@ impl SymSpell {
 
         let key_len = len(key.as_ref());
 
-        if key_len as i64 > self.max_length {
-            self.max_length = key_len as i64;
+        if key_len as i64 > self.max_dictionary_term_length {
+            self.max_dictionary_term_length = key_len as i64;
         }
 
         let edits = self.edits_prefix(key.as_ref());
@@ -1020,6 +1102,8 @@ impl SymSpell {
         hash_set
     }
 
+    // inexpensive and language independent: only deletes, no transposes + replaces + inserts
+    // replaces and inserts are expensive and language dependent (Chinese has 70,000 Unicode Han characters)
     fn edits(&self, word: &str, edit_distance: i64, delete_words: &mut AHashSet<String>) {
         let edit_distance = edit_distance + 1;
         let word_len = len(word);
@@ -1070,7 +1154,7 @@ impl SymSpell {
                         != at(suggestion, (suggestion_len - min - 1) as isize))))
     }
 
-    /// Parse a string into words, splitting at non-alphanumeric characters except for '_'.
+    /// Parse a string into words, splitting at non-alphanumeric characters, except for underscore and apostrophes.
     pub fn parse_words(&self, text: &str) -> Vec<String> {
         let mut non_unique_terms_line: Vec<String> = Vec::with_capacity(text.len() << 3);
         let text_normalized = text.to_lowercase();

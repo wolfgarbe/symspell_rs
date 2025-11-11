@@ -1,6 +1,6 @@
 [package]
 name = "symspell_rs"
-version = "6.7.3"
+version = "6.7.4"
 authors = ["Wolf Garbe <Wolf Garbe wolf.garbe@seekstorm.com>"]
 license = "MIT"
 categories = ["database-implementations", "data-structures"]
@@ -24,6 +24,7 @@ ahash ={ version = "0.8.12", features = ["serde"]}
 regex = "1.12.2"
 strsim = "0.11.1"
 smallvec = "1.15.1"
+unicode-normalization = "0.1.25"
 
 [target.'cfg(any(target_feature = "aes", target_feature = "sse2"))'.dependencies]
 gxhash = { version = "3.5.0", features = ["deterministic"]}
