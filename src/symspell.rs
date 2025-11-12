@@ -36,9 +36,9 @@ use std::cmp::Ordering;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-use unicode_normalization::UnicodeNormalization;
 #[cfg(not(all(target_feature = "aes", target_feature = "sse2")))]
 use std::sync::LazyLock;
+use unicode_normalization::UnicodeNormalization;
 
 #[cfg(not(all(target_feature = "aes", target_feature = "sse2")))]
 pub static HASHER_64: LazyLock<RandomState> =
@@ -123,8 +123,82 @@ pub fn damerau_levenshtein_osa(a: &str, b: &str, max_distance: usize) -> i64 {
 /// Normalize ligatures: "scientiﬁc" "ﬁelds" "ﬁnal"
 pub fn unicode_normalization_form_kc(input: &str) -> String {
     input
-        .nfkc()  // Apply Unicode Normalization Form KC
-        .collect::<String>()              // Collect normalized chars into a String
+        .nfkc() // Apply Unicode Normalization Form KC
+        .collect::<String>() // Collect normalized chars into a String
+}
+
+/// Transfer the letter case char-wise from source to target string.
+pub fn transfer_case(source: &str, target: &str) -> String {
+    // source = "HeLLo WoRLd!";
+    // target = "rustacean community!";
+    // result = "RuSTacEaN community!";
+
+    let mut result = String::new();
+
+    // iterate over both strings using zip_longest from itertools
+    use itertools::EitherOrBoth;
+    use itertools::Itertools;
+
+    for pair in source.chars().zip_longest(target.chars()) {
+        match pair {
+            // both characters exist
+            EitherOrBoth::Both(s, t) => {
+                if s.is_uppercase() {
+                    result.push_str(&t.to_string().to_uppercase());
+                } else if s.is_lowercase() {
+                    // we don't need to lowercase, because dictionary words are already lowercased
+                    //result.push_str(&t.to_string().to_lowercase());
+                    result.push(t);
+                } else {
+                    result.push(t);
+                }
+            }
+            // only the source has characters left — just append them as-is
+            EitherOrBoth::Left(_) => (),
+            // only the target has characters left — append unchanged
+            //todo: memorize last case for exceeding chars
+            EitherOrBoth::Right(t) => result.push(t),
+        }
+    }
+    result
+}
+
+/// Parse a string into words, splitting at non-alphanumeric characters, except for underscore and apostrophes.
+pub fn parse_words(text: &str) -> Vec<String> {
+    let mut non_unique_terms_line: Vec<String> = Vec::with_capacity(text.len() << 3);
+    let text_normalized = text.to_lowercase();
+    let mut start = false;
+    let mut start_pos = 0;
+
+    for char in text_normalized.char_indices() {
+        start = match char.1 {
+            //start of term
+            token if token.is_alphanumeric() => {
+                //token if regex_syntax::is_word_character(token) => {
+                if !start {
+                    start_pos = char.0;
+                }
+                true
+            }
+
+            // allows underscore and apostrophes as part of the word
+            '_' | '\'' | '’' => true,
+
+            //end of term
+            _ => {
+                if start {
+                    non_unique_terms_line.push(text_normalized[start_pos..char.0].to_string());
+                }
+                false
+            }
+        };
+    }
+
+    if start {
+        non_unique_terms_line.push(text_normalized[start_pos..text_normalized.len()].to_string());
+    }
+
+    non_unique_terms_line
 }
 
 fn len(s: &str) -> usize {
@@ -157,9 +231,9 @@ fn at(s: &str, i: isize) -> Option<char> {
 
 #[derive(Debug, Clone)]
 pub struct Composition {
-    // the word segmented and spelling corrected string, 
+    // the word segmented and spelling corrected string,
     pub segmented_string: String,
-    // the Edit distance sum between input string and corrected string, 
+    // the Edit distance sum between input string and corrected string,
     pub distance_sum: i64,
     // the Sum of word occurence probabilities in log scale (a measure of how common and probable the corrected segmentation is).
     pub prob_log_sum: f64,
@@ -258,7 +332,7 @@ pub struct SymSpell {
     // Dictionary that contains a mapping of lists of suggested correction words to the hashCodes
     // of the original words and the deletes derived from them. Collisions of hashCodes is tolerated,
     // because suggestions are ultimately verified via an edit distance function.
-    // A list of suggestions might have a single suggestion, or multiple suggestions. 
+    // A list of suggestions might have a single suggestion, or multiple suggestions.
     deletes: AHashMap<u64, Vec<Box<str>>>,
     // Dictionary of unique correct spelling words, and the frequency count for each word.
     words: AHashMap<Box<str>, usize>,
@@ -394,12 +468,11 @@ impl SymSpell {
         let line_parts_len = if separator == " " { 3 } else { 2 };
         if line_parts.len() >= line_parts_len {
             let key = if separator == " " {
-                format!(
-                    "{} {}",
+                [
                     line_parts[term_index as usize],
-                    line_parts[(term_index + 1) as usize]
-                )
-                .to_string()
+                    line_parts[(term_index + 1) as usize],
+                ]
+                .join(" ")
             } else {
                 line_parts[term_index as usize].to_string()
             };
@@ -491,7 +564,7 @@ impl SymSpell {
             //save some time - early termination
             //if canddate distance is already higher than suggestion distance, than there are no better suggestions to be expected
             if length_diff > max_edit_distance2 {
-                // skip to next candidate if Verbosity.All, look no further if Verbosity.Top or Closest 
+                // skip to next candidate if Verbosity.All, look no further if Verbosity.Top or Closest
                 // (candidates are ordered by delete distance, so none are closer than current)
                 if verbosity == Verbosity::All {
                     continue;
@@ -528,7 +601,7 @@ impl SymSpell {
                     }
 
                     //Damerau-Levenshtein Edit Distance: adjust distance, if both distances>0
-                    //We allow simultaneous edits (deletes) of maxEditDistance on on both the dictionary and the input term. 
+                    //We allow simultaneous edits (deletes) of maxEditDistance on on both the dictionary and the input term.
                     //For replaces and adjacent transposes the resulting edit distance stays <= maxEditDistance.
                     //For inserts and deletes the resulting edit distance might exceed maxEditDistance.
                     //To prevent suggestions of a higher edit distance, we need to calculate the resulting edit distance, if there are simultaneous edits on both sides.
@@ -556,8 +629,8 @@ impl SymSpell {
 
                         hashset2.insert(suggestion.to_string());
                     // number of edits in prefix ==maxediddistance  AND no identic suffix,
-                    // then editdistance>maxEditDistance and no need for Levenshtein calculation  
-                    // (inputLen >= prefixLength) && (suggestionLen >= prefixLength) 
+                    // then editdistance>maxEditDistance and no need for Levenshtein calculation
+                    // (inputLen >= prefixLength) && (suggestionLen >= prefixLength)
                     } else if self.has_different_suffix(
                         max_edit_distance,
                         input,
@@ -628,7 +701,7 @@ impl SymSpell {
                 }
             }
 
-            //add edits 
+            //add edits
             //derive edits (deletes) from candidate (input) and add them to candidates list
             //this is a recursive process until the maximum edit distance has been reached
             if length_diff < max_edit_distance && candidate_len <= self.prefix_length {
@@ -659,9 +732,9 @@ impl SymSpell {
 
     /// Find suggested spellings for a multi-word input string (supports word splitting/merging).
     /// Returns a list of Suggestionrepresenting suggested correct spellings for the input string.
-    /// 
+    ///
     /// lookup_compound supports compound aware automatic spelling correction of multi-word input strings with three cases:
-    /// 1. mistakenly inserted space into a correct word led to two incorrect terms 
+    /// 1. mistakenly inserted space into a correct word led to two incorrect terms
     /// 2. mistakenly omitted space between two correct words led to one incorrect combined term
     /// 3. multiple independent input terms with/without spelling errors
     ///
@@ -681,7 +754,7 @@ impl SymSpell {
     /// ```
     pub fn lookup_compound(&self, input: &str, edit_distance_max: i64) -> Vec<Suggestion> {
         //parse input string into single terms
-        let term_list1 = self.parse_words(input);
+        let term_list1 = parse_words(input);
 
         let mut suggestions: Vec<Suggestion>; //suggestions for a single term
         let mut suggestion_parts: Vec<Suggestion> = Vec::new(); //1 line with separate parts
@@ -893,12 +966,12 @@ impl SymSpell {
         vec![suggestion]
     }
 
-    /// Divides a string into words by inserting missing spaces at the appropriate positions
+    /// word_segmentation divides a string into words by inserting missing spaces at the appropriate positions.
+    /// word_segmentation works on text with any case which is retained in the output segmentation.
+    /// word_segmentation works on noisy text with spelling mistakes, which are corrected in the output segmentation.
+    /// existing spaces are allowed and considered for optimum segmentation.
     ///
-    /// misspelled words can be corrected and do not affect segmentation
-    /// existing spaces are allowed and considered for optimum segmentation
-    ///
-    /// SymSpell.WordSegmentation uses a novel approach *without* recursion.
+    /// word_segmentation uses a novel approach *without* recursion.
     /// https://seekstorm.com/blog/fast-word-segmentation-noisy-text/
     /// While each string of length n can be segmentend in 2^n−1 possible compositions https://en.wikipedia.org/wiki/Composition_(combinatorics)
     /// word_segmentation has a linear runtime O(n) to find the optimum composition
@@ -908,10 +981,12 @@ impl SymSpell {
     /// * `input` - The word being segmented.
     /// * `max_edit_distance` - The maximum edit distance between input and suggested words.
     ///
-    /// Returns the word segmented and spelling corrected string, 
-    /// The edit distance sum between input string and corrected string, 
-    /// The sum of word occurence probabilities in log scale (a measure of how common and probable the corrected segmentation is).
-    /// 
+    /// # Returns
+    ///
+    /// * the word segmented and spelling corrected string,
+    /// * The edit distance sum between input string and corrected string,
+    /// * The sum of word occurence probabilities in log scale (a measure of how common and probable the corrected segmentation is).
+    ///
     /// # Examples
     ///
     /// ```
@@ -922,18 +997,21 @@ impl SymSpell {
     /// symspell.word_segmentation("itwas", 2);
     /// ```
     pub fn word_segmentation(&self, input: &str, max_edit_distance: i64) -> Composition {
-
         // Normalize ligatures: "scientiﬁc" "ﬁelds" "ﬁnal"
-        let input=&unicode_normalization_form_kc(input).replace('\u{002D}', ""); // Remove U+002D (hyphen-minus);
+        let input = &unicode_normalization_form_kc(input).replace('\u{002D}', ""); // Remove U+002D (hyphen-minus);
 
         let asize = len(input);
 
         let mut ci: usize = 0;
         let mut compositions: Vec<Composition> = vec![Composition::empty(); asize];
 
+        //outer loop (column): all possible part start positions
         for j in 0..asize {
+            //inner loop (row): all possible part lengths (from start position): part can't be bigger than longest word in dictionary (other than long unknown word)
             let imax = min(asize - j, self.max_dictionary_term_length as usize);
             for i in 1..=imax {
+                //todo: UTF8
+                //get top spelling correction/ed for part
                 let mut part = slice(input, j, j + i);
 
                 let mut sep_len = 0;
@@ -941,22 +1019,45 @@ impl SymSpell {
 
                 let first_char = at(&part, 0).unwrap();
                 if first_char.is_whitespace() {
+                    //remove space for levensthein calculation
                     part = remove(&part, 0);
                 } else {
+                    //add ed+1: space did not exist, had to be inserted
                     sep_len = 1;
                 }
 
+                //remove space from part1, add number of removed spaces to topEd
                 top_ed += part.len() as i64;
-
+                //remove space
                 part = part.replace(" ", "");
-
                 top_ed -= part.len() as i64;
 
-                let results = self.lookup(&part, Verbosity::Top, max_edit_distance);
+                //Lookup against the lowercase term
+                //word segmentation works only for lower case text, no case retention for spelling correction in word segmentation, no spelling correction in word segmentation, CJK chars allowed with chinese dictionary?
+                // word_segmentation works on text with any case which is retained in the output segmentation.
+                // word_segmentation works on noisy text with spelling mistakes, which are corrected in the output segmentation.
+                let results = self.lookup(&part.to_lowercase(), Verbosity::Top, max_edit_distance);
+                let top_prob_log = if !results.is_empty() {
+                    //retain/preserve upper case during correction
+                    if results[0].distance > 0 {
+                        part = transfer_case(&part, results[0].term.as_str());
+                        top_ed += results[0].distance;
+                    }
 
-                let top_prob_log = if !results.is_empty() && results[0].distance == 0 {
+                    //Naive Bayes Rule
+                    //we assume the word probabilities of two words to be independent
+                    //therefore the resulting probability of the word combination is the product of the two word probabilities
+
+                    //instead of computing the product of probabilities we are computing the sum of the logarithm of probabilities
+                    //because the probabilities of words are about 10^-10, the product of many such small numbers could exceed (underflow) the floating number range and become zero
+                    //log(ab)=log(a)+log(b)
+                    //topProbabilityLog = (decimal)Math.Log10((double)results[0].count / (double)N);
                     (results[0].count as f64 / self.corpus_word_count as f64).log10()
                 } else {
+                    //todo: part.len() for UTF8
+
+                    //default, if word not found
+                    //otherwise long input text would win as long unknown word (with ed=edmax+1 ), although there there should many spaces inserted
                     top_ed += part.len() as i64;
                     (10.0 / (self.corpus_word_count as f64 * 10.0f64.powf(part.len() as f64)))
                         .log10()
@@ -971,19 +1072,42 @@ impl SymSpell {
                         prob_log_sum: top_prob_log,
                     };
                 } else if i as i64 == self.max_dictionary_term_length
+                    //replace values if better probabilityLogSum, if same edit distance OR one space difference 
                     || (((compositions[ci].distance_sum + top_ed == compositions[di].distance_sum)
                         || (compositions[ci].distance_sum + sep_len + top_ed
                             == compositions[di].distance_sum))
                         && (compositions[di].prob_log_sum
                             < compositions[ci].prob_log_sum + top_prob_log))
+                    //replace values if smaller edit distance 
                     || (compositions[ci].distance_sum + sep_len + top_ed
                         < compositions[di].distance_sum)
                 {
-                    compositions[di] = Composition {
-                        segmented_string: format!("{} {}", compositions[ci].segmented_string, part),
-                        distance_sum: compositions[ci].distance_sum + sep_len + top_ed,
-                        prob_log_sum: compositions[ci].prob_log_sum + top_prob_log,
-                    };
+                    //keep punctuation or apostrophe adjacent to previous word
+                    //todo: UTF8 punctuation
+                    if ((part.len() == 1) && part.chars().nth(0).unwrap().is_ascii_punctuation())
+                        || ((part.len() == 3) && part.starts_with("’"))
+                    {
+                        compositions[di] = Composition {
+                            segmented_string: [
+                                compositions[ci].segmented_string.as_str(),
+                                part.as_str(),
+                            ]
+                            .join(""),
+                            distance_sum: compositions[ci].distance_sum + top_ed,
+                            prob_log_sum: compositions[ci].prob_log_sum + top_prob_log,
+                        };
+                    } else {
+                        //todo: keep segmented_string and corrected string separate
+                        compositions[di] = Composition {
+                            segmented_string: [
+                                compositions[ci].segmented_string.as_str(),
+                                part.as_str(),
+                            ]
+                            .join(" "),
+                            distance_sum: compositions[ci].distance_sum + sep_len + top_ed,
+                            prob_log_sum: compositions[ci].prob_log_sum + top_prob_log,
+                        };
+                    }
                 }
             }
             if j != 0 {
@@ -1152,44 +1276,5 @@ impl SymSpell {
                     != at(suggestion, (suggestion_len - min) as isize))
                     || (at(input, (input_len - min) as isize)
                         != at(suggestion, (suggestion_len - min - 1) as isize))))
-    }
-
-    /// Parse a string into words, splitting at non-alphanumeric characters, except for underscore and apostrophes.
-    pub fn parse_words(&self, text: &str) -> Vec<String> {
-        let mut non_unique_terms_line: Vec<String> = Vec::with_capacity(text.len() << 3);
-        let text_normalized = text.to_lowercase();
-        let mut start = false;
-        let mut start_pos = 0;
-
-        for char in text_normalized.char_indices() {
-            start = match char.1 {
-                //start of term
-                token if token.is_alphanumeric() => {
-                    //token if regex_syntax::is_word_character(token) => {
-                    if !start {
-                        start_pos = char.0;
-                    }
-                    true
-                }
-
-                // allows underscore and apostrophes as part of the word
-                '_' | '\'' | '’' => true,
-
-                //end of term
-                _ => {
-                    if start {
-                        non_unique_terms_line.push(text_normalized[start_pos..char.0].to_string());
-                    }
-                    false
-                }
-            };
-        }
-
-        if start {
-            non_unique_terms_line
-                .push(text_normalized[start_pos..text_normalized.len()].to_string());
-        }
-
-        non_unique_terms_line
     }
 }

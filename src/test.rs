@@ -88,24 +88,48 @@ mod tests {
 
     #[test]
     fn test_word_segmentation() {
-        let edit_distance_max = 2;
+        let edit_distance_max = 1;
         let mut symspell = SymSpell::new(edit_distance_max, 7, 1);
         symspell.load_dictionary("./data/frequency_dictionary_en_82_765.txt", 0, 1, " ");
 
         let typo = "thequickbrownfoxjumpsoverthelazydog";
         let correction = "the quick brown fox jumps over the lazy dog";
-        let result = symspell.word_segmentation(typo, edit_distance_max);
+        let result = symspell.word_segmentation(typo, 0);
+        assert_eq!(correction, result.segmented_string);
+
+        // works with upper case and preserves case
+        let typo = "THEQUICKBROWNFOXJUMPSOVERTHELAZYDOG";
+        let correction = "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG";
+        let result = symspell.word_segmentation(typo, 0);
+        assert_eq!(correction, result.segmented_string);
+
+        // spell correct and preserve case for corrected term: THF -> THE
+        let typo = "THFQUICKBROWNFOXJUMPSOVERTHELAZYDOG";
+        let correction = "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG";
+        let result = symspell.word_segmentation(typo, 1);
         assert_eq!(correction, result.segmented_string);
 
         let typo = "itwasabrightcolddayinaprilandtheclockswerestrikingthirteen";
         let correction = "it was a bright cold day in april and the clocks were striking thirteen";
-        let result = symspell.word_segmentation(typo, edit_distance_max);
+        let result = symspell.word_segmentation(typo, 0);
         assert_eq!(correction, result.segmented_string);
 
         let typo =
             "itwasthebestoftimesitwastheworstoftimesitwastheageofwisdomitwastheageoffoolishness";
         let correction = "it was the best of times it was the worst of times it was the age of wisdom it was the age of foolishness";
-        let result = symspell.word_segmentation(typo, edit_distance_max);
+        let result = symspell.word_segmentation(typo, 0);
+        assert_eq!(correction, result.segmented_string);
+
+        //keep punctuation or apostrophe adjacent to previous word, keep letter case
+        let typo = "Idranktheglasses’contents,whichtastedofelderberries";
+        let correction = "I drank the glasses’ contents, which tasted of elderberries";
+        let result = symspell.word_segmentation(typo, 0);
+        assert_eq!(correction, result.segmented_string);
+
+        //keep punctuation or apostrophe adjacent to previous word, keep letter case
+        let typo = "Idranktheglasses\'contents,whichtastedofelderberries";
+        let correction = "I drank the glasses\' contents, which tasted of elderberries";
+        let result = symspell.word_segmentation(typo, 0);
         assert_eq!(correction, result.segmented_string);
     }
 
@@ -115,6 +139,5 @@ mod tests {
         let correction = "scientific";
         let result = unicode_normalization_form_kc(typo);
         assert_eq!(correction, result);
-
     }
 }
