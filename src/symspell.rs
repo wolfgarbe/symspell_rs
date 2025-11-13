@@ -524,7 +524,7 @@ impl SymSpell {
     ///
     /// let mut symspell: SymSpell = SymSpell::new(2, 7, 1);
     /// symspell.load_dictionary("data/frequency_dictionary_en_82_765.txt", 0, 1, " ");
-    /// symspell.lookup("whatver", Verbosity::Top, 2);
+    /// symspell.lookup("whatver", Verbosity::Top, 2,false);
     /// ```
     pub fn lookup(
         &self,
@@ -552,7 +552,6 @@ impl SymSpell {
         let mut hashset1: AHashSet<String> = AHashSet::new();
         let mut hashset2: AHashSet<String> = AHashSet::new();
 
-        //wol6000 case
         if self.words.contains_key(input) {
             let suggestion_count = self.words[input];
             suggestions.push(Suggestion::new(input_original_case, 0, suggestion_count));
