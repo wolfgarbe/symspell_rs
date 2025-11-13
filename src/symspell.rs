@@ -133,31 +133,52 @@ pub fn transfer_case(source: &str, target: &str) -> String {
     // target = "rustacean community!";
     // result = "RuSTacEaN community!";
 
+    //shortcut: if input and suggestion are identical or case-insensitive identical, no transfer required
+    if source == target || source.eq_ignore_ascii_case(target) {
+        return source.to_string();
+    }
+
     let mut result = String::new();
 
     // iterate over both strings using zip_longest from itertools
     use itertools::EitherOrBoth;
     use itertools::Itertools;
+    let mut last_upper = false;
 
     for pair in source.chars().zip_longest(target.chars()) {
         match pair {
             // both characters exist
             EitherOrBoth::Both(s, t) => {
                 if s.is_uppercase() {
+                    //don't memorize letter case for first character
+                    if !result.is_empty() {
+                        last_upper = true;
+                    }
                     result.push_str(&t.to_string().to_uppercase());
-                } else if s.is_lowercase() {
-                    // we don't need to lowercase, because dictionary words are already lowercased
-                    //result.push_str(&t.to_string().to_lowercase());
+                }
+                /*
+                // we don't need to lowercase, because dictionary words are already lowercased
+                else if s.is_lowercase() {
+                    result.push_str(&t.to_string().to_lowercase());
                     result.push(t);
-                } else {
+                }
+                */
+                else {
+                    last_upper = false;
                     result.push(t);
                 }
             }
             // only the source has characters left — just append them as-is
             EitherOrBoth::Left(_) => (),
             // only the target has characters left — append unchanged
-            //todo: memorize last case for exceeding chars
-            EitherOrBoth::Right(t) => result.push(t),
+            EitherOrBoth::Right(t) => {
+                //use memorizeed case from last char for exceeding chars
+                if last_upper {
+                    result.push_str(&t.to_string().to_uppercase());
+                } else {
+                    result.push(t);
+                }
+            }
         }
     }
     result
@@ -491,9 +512,10 @@ impl SymSpell {
     ///
     /// # Arguments
     ///
-    /// * `input` - The word being spell checked.
+    /// * `input` - The word being spell checked. Upper/lower case allowed.
     /// * `verbosity` - The value controlling the quantity/closeness of the retuned suggestions.
     /// * `max_edit_distance` - The maximum edit distance between input and suggested words.
+    /// * `preserve_case` - Whether to preserve the letter case from input to suggestion.
     ///
     /// # Examples
     ///
@@ -509,6 +531,7 @@ impl SymSpell {
         input: &str,
         verbosity: Verbosity,
         max_edit_distance: i64,
+        preserve_case: bool,
     ) -> Vec<Suggestion> {
         if max_edit_distance > self.max_dictionary_edit_distance {
             panic!("max_edit_distance is bigger than max_dictionary_edit_distance");
@@ -516,8 +539,10 @@ impl SymSpell {
 
         let mut suggestions: Vec<Suggestion> = Vec::new();
 
-        let prep_input = (input).to_string();
-        let input = prep_input.as_str();
+        let input_original_case: &str = input;
+        let input = input.to_lowercase();
+        let input = input.as_str();
+
         let input_len = len(input) as i64;
         // early termination - word is too big to possibly match any words
         if input_len - max_edit_distance > self.max_dictionary_term_length {
@@ -527,9 +552,10 @@ impl SymSpell {
         let mut hashset1: AHashSet<String> = AHashSet::new();
         let mut hashset2: AHashSet<String> = AHashSet::new();
 
+        //wol6000 case
         if self.words.contains_key(input) {
             let suggestion_count = self.words[input];
-            suggestions.push(Suggestion::new(input, 0, suggestion_count));
+            suggestions.push(Suggestion::new(input_original_case, 0, suggestion_count));
             // early termination - return exact match, unless caller wants all matches
             if verbosity != Verbosity::All {
                 return suggestions;
@@ -728,6 +754,13 @@ impl SymSpell {
             suggestions.sort();
         }
 
+        //transfer case from input to suggestion
+        if preserve_case {
+            for suggestion in suggestions.iter_mut() {
+                suggestion.term = transfer_case(input_original_case, &suggestion.term);
+            }
+        }
+
         suggestions
     }
 
@@ -763,7 +796,7 @@ impl SymSpell {
         //translate every term to its best suggestion, otherwise it remains unchanged
         let mut last_combi = false;
         for (i, term) in term_list1.iter().enumerate() {
-            suggestions = self.lookup(term, Verbosity::Top, edit_distance_max);
+            suggestions = self.lookup(term, Verbosity::Top, edit_distance_max, false);
 
             //combi check, always before split
             if i > 0 && !last_combi {
@@ -771,6 +804,7 @@ impl SymSpell {
                     &[term_list1[i - 1].as_str(), term_list1[i].as_str()].join(""),
                     Verbosity::Top,
                     edit_distance_max,
+                    false,
                 );
 
                 if !suggestions_combi.is_empty() {
@@ -832,10 +866,11 @@ impl SymSpell {
                         let part1 = slice(&term_list1[i], 0, j);
                         let part2 = slice(&term_list1[i], j, term_length);
                         let mut suggestion_split = Suggestion::empty();
-                        let suggestions1 = self.lookup(&part1, Verbosity::Top, edit_distance_max);
+                        let suggestions1 =
+                            self.lookup(&part1, Verbosity::Top, edit_distance_max, false);
                         if !suggestions1.is_empty() {
                             let suggestions2 =
-                                self.lookup(&part2, Verbosity::Top, edit_distance_max);
+                                self.lookup(&part2, Verbosity::Top, edit_distance_max, false);
 
                             if !suggestions2.is_empty() {
                                 //select best suggestion for split pair
@@ -968,7 +1003,7 @@ impl SymSpell {
     }
 
     /// word_segmentation divides a string into words by inserting missing spaces at the appropriate positions.
-    /// word_segmentation works on text with any case which is retained in the output segmentation.
+    /// word_segmentation works on text with any letter case which is retained in the output segmentation.
     /// word_segmentation works on noisy text with spelling mistakes, which are corrected in the output segmentation.
     /// existing spaces are allowed and considered for optimum segmentation.
     ///
@@ -979,7 +1014,7 @@ impl SymSpell {
     ///
     /// # Arguments
     ///
-    /// * `input` - The word being segmented.
+    /// * `input` - The string being segmented into words. Upper/lower case allowed.
     /// * `max_edit_distance` - The maximum edit distance between input and suggested words.
     ///
     /// # Returns
@@ -1035,11 +1070,11 @@ impl SymSpell {
                 // Lookup against the lowercase term
                 // word_segmentation works on text with any case which is retained in the output segmentation.
                 // word_segmentation works on noisy text with spelling mistakes, which are corrected in the output segmentation.
-                let results = self.lookup(&part.to_lowercase(), Verbosity::Top, max_edit_distance);
+                let results = self.lookup(&part, Verbosity::Top, max_edit_distance, true);
                 let top_prob_log = if !results.is_empty() {
-                    //retain/preserve letter case during correction
+                    //retain/preserve/transfer letter case during correction
                     if results[0].distance > 0 {
-                        part = transfer_case(&part, results[0].term.as_str());
+                        part = results[0].term.clone();
                         top_ed += results[0].distance;
                     }
 

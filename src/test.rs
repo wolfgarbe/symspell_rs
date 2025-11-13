@@ -1,6 +1,9 @@
 #[cfg(test)]
 mod tests {
-    use crate::{SymSpell, Verbosity, symspell::unicode_normalization_form_kc};
+    use crate::{
+        SymSpell, Verbosity,
+        symspell::{transfer_case, unicode_normalization_form_kc},
+    };
 
     #[test]
     fn test_lookup() {
@@ -10,7 +13,16 @@ mod tests {
 
         let typo = "hous";
         let correction = "house";
-        let results = symspell.lookup(typo, Verbosity::Top, edit_distance_max);
+        let results = symspell.lookup(typo, Verbosity::Top, edit_distance_max, false);
+        assert_eq!(1, results.len());
+        assert_eq!(correction, results[0].term);
+        assert_eq!(1, results[0].distance);
+        assert_eq!(231310420, results[0].count);
+
+        // case-insensitive lookup, but preserve original case in suggestion
+        let typo = "Hous";
+        let correction = "House";
+        let results = symspell.lookup(typo, Verbosity::Top, edit_distance_max, true);
         assert_eq!(1, results.len());
         assert_eq!(correction, results[0].term);
         assert_eq!(1, results[0].distance);
@@ -150,6 +162,23 @@ mod tests {
         let typo = "scientiﬁc";
         let correction = "scientific";
         let result = unicode_normalization_form_kc(typo);
+        assert_eq!(correction, result);
+    }
+
+    #[test]
+    fn test_transfer_case() {
+        // transfer case with UTF8 characters, with shorter source
+        let source = "LEG MOZE OZNACZAC LAKE W POBLIZU RZEKI";
+        let target = "Łęg może oznaczać łąkę w pobliżu rzeki (łąka łęgowa)";
+        let correction = "ŁĘG MOŻE OZNACZAĆ ŁĄKĘ W POBLIŻU RZEKI (ŁĄKA ŁĘGOWA)";
+        let result = transfer_case(source, target);
+        assert_eq!(correction, result);
+
+        // transfer case with UTF8 characters, with shortcut
+        let source = "LEG MOZE OZNACZAC LAKE W POBLIZU RZEKI (ŁĄKA ŁĘGOWA)";
+        let target = "Łęg może oznaczać łąkę w pobliżu rzeki (łąka łęgowa)";
+        let correction = "ŁĘG MOŻE OZNACZAĆ ŁĄKĘ W POBLIŻU RZEKI (ŁĄKA ŁĘGOWA)";
+        let result = transfer_case(source, target);
         assert_eq!(correction, result);
     }
 }

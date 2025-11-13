@@ -190,7 +190,7 @@ symspell.load_dictionary("data/frequency_dictionary_en_82_765.txt", term_index, 
 let input_term = "hous";
 let suggestion_verbosity = Verbosity::Closest;//Top, Closest, All
 let max_edit_distance_lookup = 1; //max edit distance per lookup (maxEditDistanceLookup<=maxEditDistanceDictionary)
-let suggestions = symspell.lookup(input_term, suggestion_verbosity, max_edit_distance_lookup);
+let suggestions = symspell.lookup(input_term, suggestion_verbosity, max_edit_distance_lookup,false);
 //display suggestions, edit distance and term frequency
 println!("{:?}", suggestions);
 ```
