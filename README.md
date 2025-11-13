@@ -174,20 +174,16 @@ __Performance:__
 
 #### Usage of SymSpell Library
 
+Single word spelling correction
 ```rust
 use symspell::{SymSpell, Verbosity};
-
-fn main() {
-
-//### Single word spelling correction
 
 let max_edit_distance_dictionary = 2; //maximum edit distance per dictionary precalculation
 let mut symspell: SymSpell = SymSpell::new(max_edit_distance_dictionary, 7, 1);
 
+// single term dictionary
 let term_index:i64 = 0; //column of the term in the dictionary text file
 let count_index:i64 = 1; //column of the term frequency in the dictionary text file
-
-// single term dictionary
 symspell.load_dictionary("data/frequency_dictionary_en_82_765.txt", term_index, count_index, " ");
 
 //lookup suggestions for single-word input strings
@@ -197,12 +193,17 @@ let max_edit_distance_lookup = 1; //max edit distance per lookup (maxEditDistanc
 let suggestions = symspell.lookup(input_term, suggestion_verbosity, max_edit_distance_lookup);
 //display suggestions, edit distance and term frequency
 println!("{:?}", suggestions);
+```
 
-//### Compound aware multi-word spelling correction
+Compound aware multi-word spelling correction
+```rust
+use symspell::{SymSpell, Verbosity};
 
 let mut symspell = SymSpell::new(max_edit_distance_dictionary, 7, 1);
 
 // single term dictionary
+let term_index:i64 = 0; //column of the term in the dictionary text file
+let count_index:i64 = 1; //column of the term frequency in the dictionary text file
 symspell.load_dictionary("data/frequency_dictionary_en_82_765.txt", term_index, count_index, " ");
 // bigram dictionary
 symspell.load_bigram_dictionary("data/frequency_bigramdictionary_en_243_342.txt",0,2, " ",
@@ -214,13 +215,18 @@ let max_edit_distance_lookup = 2; //max edit distance per lookup (per single wor
 let compound_suggestions = symspell.lookup_compound(input_sentence, max_edit_distance_lookup);
 //display suggestions, edit distance and term frequency
 println!("{:?}", compound_suggestions);
+```
 
-//### Word Segmentation of noisy text
+Word Segmentation of noisy text
+```rust
+use symspell::{SymSpell, Verbosity};
 
 let max_edit_distance_dictionary = 0; //maximum edit distance per dictionary precalculation
 let mut symspell = SymSpell::new(max_edit_distance_dictionary, 7, 1);
 
 // single term dictionary
+let term_index:i64 = 0; //column of the term in the dictionary text file
+let count_index:i64 = 1; //column of the term frequency in the dictionary text file
 symspell.load_dictionary("data/frequency_dictionary_en_82_765.txt", term_index, count_index, " ");
 
 //word segmentation and correction for multi-word input strings with/without spaces
@@ -229,13 +235,18 @@ let max_edit_distance_lookup = 0;
 let result = symspell.word_segmentation(input_sentence, max_edit_distance_lookup);
 //display term and edit distance
 println!("{:?}", result.segmented_string);
+```
 
-//### Word Segmentation of Chinese text
+Word Segmentation of Chinese text
+```rust
+use symspell::{SymSpell, Verbosity};
 
 let max_edit_distance_dictionary = 0; //maximum edit distance per dictionary precalculation
 let mut symspell = SymSpell::new(max_edit_distance_dictionary, 7, 1);
 
 // single term dictionary
+let term_index:i64 = 0; //column of the term in the dictionary text file
+let count_index:i64 = 1; //column of the term frequency in the dictionary text file
 symspell.load_dictionary("data/frequency_dictionary_zh_cn_349_045.txt", term_index, count_index, " ");
 
 //word segmentation and correction for multi-word input strings with/without spaces
@@ -244,8 +255,6 @@ let max_edit_distance_lookup = 0;
 let result = symspell.word_segmentation(input_sentence, max_edit_distance_lookup);
 //display term and edit distance
 println!("{:?}", result.segmented_string);
-
-}
 ```
 
 ---
