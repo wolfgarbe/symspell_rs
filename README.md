@@ -179,6 +179,8 @@ use symspell::{SymSpell, Verbosity};
 
 fn main() {
 
+//### Single word spelling correction
+
 let max_edit_distance_dictionary = 2; //maximum edit distance per dictionary precalculation
 let mut symspell: SymSpell = SymSpell::new(max_edit_distance_dictionary, 7, 1);
 
@@ -196,7 +198,7 @@ let suggestions = symspell.lookup(input_term, suggestion_verbosity, max_edit_dis
 //display suggestions, edit distance and term frequency
 println!("{:?}", suggestions);
 
-//###
+//### Compound aware multi-word spelling correction
 
 let mut symspell = SymSpell::new(max_edit_distance_dictionary, 7, 1);
 
@@ -213,7 +215,7 @@ let compound_suggestions = symspell.lookup_compound(input_sentence, max_edit_dis
 //display suggestions, edit distance and term frequency
 println!("{:?}", compound_suggestions);
 
-//###
+//### Word Segmentation of noisy text
 
 let max_edit_distance_dictionary = 0; //maximum edit distance per dictionary precalculation
 let mut symspell = SymSpell::new(max_edit_distance_dictionary, 7, 1);
@@ -228,7 +230,7 @@ let result = symspell.word_segmentation(input_sentence, max_edit_distance_lookup
 //display term and edit distance
 println!("{:?}", result.segmented_string);
 
-//###
+//### Word Segmentation of Chinese text
 
 let max_edit_distance_dictionary = 0; //maximum edit distance per dictionary precalculation
 let mut symspell = SymSpell::new(max_edit_distance_dictionary, 7, 1);

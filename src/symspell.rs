@@ -423,6 +423,7 @@ impl SymSpell {
     }
 
     /// Load multiple bigram entries from a file of bigram/frequency count pairs.
+    /// Only used in lookup_compound for improved compound splitting/merging/correction quality.
     ///
     /// # Arguments
     ///
