@@ -1010,7 +1010,6 @@ impl SymSpell {
             //inner loop (row): all possible part lengths (from start position): part can't be bigger than longest word in dictionary (other than long unknown word)
             let imax = min(asize - j, self.max_dictionary_term_length as usize);
             for i in 1..=imax {
-                //todo: UTF8
                 //get top spelling correction/ed for part
                 let mut part = slice(input, j, j + i);
 
@@ -1032,13 +1031,12 @@ impl SymSpell {
                 part = part.replace(" ", "");
                 top_ed -= part.len() as i64;
 
-                //Lookup against the lowercase term
-                //word segmentation works only for lower case text, no case retention for spelling correction in word segmentation, no spelling correction in word segmentation, CJK chars allowed with chinese dictionary?
+                // Lookup against the lowercase term
                 // word_segmentation works on text with any case which is retained in the output segmentation.
                 // word_segmentation works on noisy text with spelling mistakes, which are corrected in the output segmentation.
                 let results = self.lookup(&part.to_lowercase(), Verbosity::Top, max_edit_distance);
                 let top_prob_log = if !results.is_empty() {
-                    //retain/preserve upper case during correction
+                    //retain/preserve letter case during correction
                     if results[0].distance > 0 {
                         part = transfer_case(&part, results[0].term.as_str());
                         top_ed += results[0].distance;
@@ -1051,16 +1049,15 @@ impl SymSpell {
                     //instead of computing the product of probabilities we are computing the sum of the logarithm of probabilities
                     //because the probabilities of words are about 10^-10, the product of many such small numbers could exceed (underflow) the floating number range and become zero
                     //log(ab)=log(a)+log(b)
-                    //topProbabilityLog = (decimal)Math.Log10((double)results[0].count / (double)N);
+                    //todo: use decimal crate for higher precision?
                     (results[0].count as f64 / self.corpus_word_count as f64).log10()
                 } else {
-                    //todo: part.len() for UTF8
+                    let part_len = len(&part);
 
                     //default, if word not found
                     //otherwise long input text would win as long unknown word (with ed=edmax+1 ), although there there should many spaces inserted
-                    top_ed += part.len() as i64;
-                    (10.0 / (self.corpus_word_count as f64 * 10.0f64.powf(part.len() as f64)))
-                        .log10()
+                    top_ed += part_len as i64;
+                    (10.0 / (self.corpus_word_count as f64 * 10.0f64.powf(part_len as f64))).log10()
                 };
 
                 let di = (i + ci) % asize;
@@ -1083,7 +1080,6 @@ impl SymSpell {
                         < compositions[di].distance_sum)
                 {
                     //keep punctuation or apostrophe adjacent to previous word
-                    //todo: UTF8 punctuation
                     if ((part.len() == 1) && part.chars().nth(0).unwrap().is_ascii_punctuation())
                         || ((part.len() == 3) && part.starts_with("’"))
                     {

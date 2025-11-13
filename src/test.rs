@@ -134,6 +134,18 @@ mod tests {
     }
 
     #[test]
+    fn test_chinese_word_segmentation() {
+        let edit_distance_max = 0;
+        let mut symspell = SymSpell::new(edit_distance_max, 7, 1);
+        symspell.load_dictionary("./data/frequency_dictionary_zh_cn_349_045.txt", 0, 1, " ");
+
+        let typo = "部分居民生活水平";
+        let correction = "部分 居民 生活 水平";
+        let result = symspell.word_segmentation(typo, 0);
+        assert_eq!(correction, result.segmented_string);
+    }
+
+    #[test]
     fn test_normalization() {
         let typo = "scientiﬁc";
         let correction = "scientific";

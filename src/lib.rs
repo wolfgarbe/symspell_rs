@@ -26,6 +26,7 @@ println!("{:?}", suggestions);
 
 //###
 
+let max_edit_distance_dictionary = 2; //maximum edit distance per dictionary precalculation
 let mut symspell = SymSpell::new(max_edit_distance_dictionary, 7, 1);
 
 // single term dictionary
@@ -43,12 +44,11 @@ println!("{:?}", compound_suggestions);
 
 //###
 
+let max_edit_distance_dictionary = 0; //maximum edit distance per dictionary precalculation
 let mut symspell = SymSpell::new(max_edit_distance_dictionary, 7, 1);
 
 // single term dictionary
 symspell.load_dictionary("data/frequency_dictionary_en_82_765.txt", term_index, count_index, " ");
-// bigram dictionary
-symspell.load_bigram_dictionary("data/frequency_bigramdictionary_en_243_342.txt",0,2, " ");
 
 //word segmentation and correction for multi-word input strings with/without spaces
 let input_sentence = "thequickbrownfoxjumpsoverthelazydog";
@@ -56,6 +56,22 @@ let max_edit_distance_lookup = 0;
 let result = symspell.word_segmentation(input_sentence, max_edit_distance_lookup);
 //display term and edit distance
 println!("{:?}", result.segmented_string);
+
+//###
+
+let max_edit_distance_dictionary = 0; //maximum edit distance per dictionary precalculation
+let mut symspell = SymSpell::new(max_edit_distance_dictionary, 7, 1);
+
+// single term dictionary
+symspell.load_dictionary("data/frequency_dictionary_zh_cn_349_045.txt", term_index, count_index, " ");
+
+//word segmentation and correction for multi-word input strings with/without spaces
+let input_sentence = "部分居民生活水平";
+let max_edit_distance_lookup = 0;
+let result = symspell.word_segmentation(input_sentence, max_edit_distance_lookup);
+//display term and edit distance
+println!("{:?}", result.segmented_string);
+
 ```
 
 */
