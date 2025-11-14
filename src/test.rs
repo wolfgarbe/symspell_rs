@@ -43,7 +43,16 @@ mod tests {
 
         let typo = "whereis th elove";
         let correction = "where is the love";
-        let results = symspell.lookup_compound(typo, edit_distance_max);
+        let results = symspell.lookup_compound(typo, edit_distance_max, false);
+        assert_eq!(1, results.len());
+        assert_eq!(correction, results[0].term);
+        assert_eq!(2, results[0].distance);
+        assert_eq!(585, results[0].count);
+
+        // preserve case
+        let typo = "WHEREIS TH ELOVE";
+        let correction = "WHERE IS THE LOVE";
+        let results = symspell.lookup_compound(typo, edit_distance_max, true);
         assert_eq!(1, results.len());
         assert_eq!(correction, results[0].term);
         assert_eq!(2, results[0].distance);
@@ -51,7 +60,7 @@ mod tests {
 
         let typo = "the bigjest playrs";
         let correction = "the biggest players";
-        let results = symspell.lookup_compound(typo, edit_distance_max);
+        let results = symspell.lookup_compound(typo, edit_distance_max, false);
         assert_eq!(1, results.len());
         assert_eq!(correction, results[0].term);
         assert_eq!(2, results[0].distance);
@@ -59,15 +68,15 @@ mod tests {
 
         let typo = "Can yu readthis";
         let correction = "can you read this";
-        let results = symspell.lookup_compound(typo, edit_distance_max);
+        let results = symspell.lookup_compound(typo, edit_distance_max, false);
         assert_eq!(1, results.len());
         assert_eq!(correction, results[0].term);
-        assert_eq!(3, results[0].distance);
+        assert_eq!(2, results[0].distance);
         assert_eq!(1366, results[0].count);
 
         let typo = "whereis th elove hehad dated forImuch of thepast who couqdn'tread in sixthgrade and ins pired him";
         let correction = "where is the love he had dated for much of the past who couldn't read in sixth grade and inspired him";
-        let results = symspell.lookup_compound(typo, edit_distance_max);
+        let results = symspell.lookup_compound(typo, edit_distance_max, false);
         assert_eq!(1, results.len());
         assert_eq!(correction, results[0].term);
         assert_eq!(9, results[0].distance);
@@ -75,7 +84,7 @@ mod tests {
 
         let typo = "in te dhird qarter oflast jear he hadlearned ofca sekretplan";
         let correction = "in the third quarter of last year he had learned of a secret plan";
-        let results = symspell.lookup_compound(typo, edit_distance_max);
+        let results = symspell.lookup_compound(typo, edit_distance_max, false);
         assert_eq!(1, results.len());
         assert_eq!(correction, results[0].term);
         assert_eq!(9, results[0].distance);
@@ -83,7 +92,7 @@ mod tests {
 
         let typo = "the bigjest playrs in te strogsommer film slatew ith plety of funn";
         let correction = "the biggest players in the strong summer film slate with plenty of fun";
-        let results = symspell.lookup_compound(typo, edit_distance_max);
+        let results = symspell.lookup_compound(typo, edit_distance_max, false);
         assert_eq!(1, results.len());
         assert_eq!(correction, results[0].term);
         assert_eq!(9, results[0].distance);
@@ -91,10 +100,10 @@ mod tests {
 
         let typo = "Can yu readthis messa ge despite thehorible sppelingmsitakes";
         let correction = "can you read this message despite the horrible spelling mistakes";
-        let results = symspell.lookup_compound(typo, edit_distance_max);
+        let results = symspell.lookup_compound(typo, edit_distance_max, false);
         assert_eq!(1, results.len());
         assert_eq!(correction, results[0].term);
-        assert_eq!(10, results[0].distance);
+        assert_eq!(9, results[0].distance);
         assert_eq!(0, results[0].count);
     }
 

@@ -212,7 +212,7 @@ symspell.load_bigram_dictionary("data/frequency_bigramdictionary_en_243_342.txt"
 //lookup suggestions for multi-word input strings (supports compound splitting & merging)
 let input_sentence = "whereis th elove hehad dated forImuch of thepast who couqdn'tread in sixtgrade and ins pired him";
 let max_edit_distance_lookup = 2; //max edit distance per lookup (per single word, not per whole input string)
-let compound_suggestions = symspell.lookup_compound(input_sentence, max_edit_distance_lookup);
+let compound_suggestions = symspell.lookup_compound(input_sentence, max_edit_distance_lookup,false);
 //display suggestions, edit distance and term frequency
 println!("{:?}", compound_suggestions);
 ```

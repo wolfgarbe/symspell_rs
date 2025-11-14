@@ -163,7 +163,10 @@ pub fn transfer_case(source: &str, target: &str) -> String {
                     result.push(t);
                 }
                 */
-                else {
+                // don't transfer lower case of whitespace in source to non-whitespace char in target
+                else if s.is_whitespace() && !t.is_whitespace() && last_upper {
+                    result.push_str(&t.to_string().to_uppercase());
+                } else {
                     last_upper = false;
                     result.push(t);
                 }
@@ -539,9 +542,13 @@ impl SymSpell {
 
         let mut suggestions: Vec<Suggestion> = Vec::new();
 
-        let input_original_case: &str = input;
-        let input = input.to_lowercase();
-        let input = input.as_str();
+        let input_lower_case = input.to_lowercase();
+        let input_original_case = if preserve_case {
+            input
+        } else {
+            &input_lower_case
+        };
+        let input = input_lower_case.as_str();
 
         let input_len = len(input) as i64;
         // early termination - word is too big to possibly match any words
@@ -775,6 +782,7 @@ impl SymSpell {
     ///
     /// * `input` - The sentence being spell checked.
     /// * `max_edit_distance` - The maximum edit distance between input and suggested words.
+    /// * `preserve_case` - Whether to preserve the letter case from input to suggestion.
     ///
     /// # Examples
     ///
@@ -783,9 +791,14 @@ impl SymSpell {
     ///
     /// let mut symspell: SymSpell = SymSpell::new(2, 7, 1);
     /// symspell.load_dictionary("data/frequency_dictionary_en_82_765.txt", 0, 1, " ");
-    /// symspell.lookup_compound("whereis th elove", 2);
+    /// symspell.lookup_compound("whereis th elove", 2, false);
     /// ```
-    pub fn lookup_compound(&self, input: &str, edit_distance_max: i64) -> Vec<Suggestion> {
+    pub fn lookup_compound(
+        &self,
+        input: &str,
+        edit_distance_max: i64,
+        preserve_case: bool,
+    ) -> Vec<Suggestion> {
         //parse input string into single terms
         let term_list1 = parse_words(input);
 
@@ -994,9 +1007,16 @@ impl SymSpell {
             tmp_count *= si.count as f64 / self.corpus_word_count as f64;
         }
 
-        suggestion.term = s.trim().to_string();
+        let output = s.trim();
         suggestion.count = tmp_count as usize;
-        suggestion.distance = damerau_levenshtein_osa(input, &suggestion.term, usize::MAX);
+        suggestion.distance = damerau_levenshtein_osa(&input.to_lowercase(), output, usize::MAX);
+
+        //transfer case from input to suggestion
+        suggestion.term = if preserve_case {
+            transfer_case(input, output)
+        } else {
+            output.to_lowercase()
+        };
 
         vec![suggestion]
     }
