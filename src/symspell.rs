@@ -275,17 +275,18 @@ impl Composition {
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+/// Suggested correct spelling for a given input word.
 pub struct Suggestion {
-    // The suggested correctly spelled word.
+    /// The suggested correctly spelled word.
     pub term: String,
-    // Edit distance between searched for word and suggestion.
+    /// Edit distance between searched for word and suggestion.
     pub distance: i64,
-    // Frequency of suggestion in the dictionary (a measure of how common the word is).
+    /// Frequency of suggestion in the dictionary (a measure of how common the word is).
     pub count: usize,
 }
 
 impl Suggestion {
-    pub fn empty() -> Suggestion {
+    fn empty() -> Suggestion {
         Suggestion {
             term: "".to_string(),
             distance: 0,
@@ -293,7 +294,7 @@ impl Suggestion {
         }
     }
 
-    pub fn new(term: impl Into<String>, distance: i64, count: usize) -> Suggestion {
+    fn new(term: impl Into<String>, distance: i64, count: usize) -> Suggestion {
         Suggestion {
             term: term.into(),
             distance,
@@ -307,7 +308,7 @@ impl Ord for Suggestion {
     fn cmp(&self, other: &Suggestion) -> Ordering {
         let distance_cmp = self.distance.cmp(&other.distance);
         if distance_cmp == Ordering::Equal {
-            return self.count.cmp(&other.count);
+            return other.count.cmp(&self.count);
         }
         distance_cmp
     }
@@ -512,6 +513,7 @@ impl SymSpell {
 
     /// Find suggested spellings for a given input word, using the maximum
     /// edit distance specified during construction of the SymSpell dictionary.
+    /// Returned suggestions are sorted by distance ascending, then by frequency count descending.
     ///
     /// # Arguments
     ///
@@ -757,7 +759,7 @@ impl SymSpell {
 
         //sort by ascending edit distance, then by descending word frequency
         if suggestions.len() > 1 {
-            suggestions.sort();
+            suggestions.sort_unstable();
         }
 
         //transfer case from input to suggestion

@@ -92,4 +92,4 @@ println!("{:?}", result.segmented_string);
 
 mod symspell;
 mod test;
-pub use symspell::{SymSpell, Verbosity};
+pub use symspell::{Suggestion, SymSpell, Verbosity};

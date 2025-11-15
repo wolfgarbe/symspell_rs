@@ -27,6 +27,30 @@ mod tests {
         assert_eq!(correction, results[0].term);
         assert_eq!(1, results[0].distance);
         assert_eq!(231310420, results[0].count);
+
+        let typo = "warsa";
+        let correction = "wars";
+        let results = symspell.lookup(typo, Verbosity::Top, edit_distance_max, false);
+        assert_eq!(1, results.len());
+        assert_eq!(correction, results[0].term);
+        assert_eq!(1, results[0].distance);
+        assert_eq!(27898180, results[0].count);
+
+        let typo = "warsa";
+        let correction = "wars";
+        let results = symspell.lookup(typo, Verbosity::Closest, edit_distance_max, false);
+        assert_eq!(3, results.len());
+        assert_eq!(correction, results[0].term);
+        assert_eq!(1, results[0].distance);
+        assert_eq!(27898180, results[0].count);
+
+        let typo = "warsa";
+        let correction = "wars";
+        let results = symspell.lookup(typo, Verbosity::All, edit_distance_max, false);
+        assert_eq!(112, results.len());
+        assert_eq!(correction, results[0].term);
+        assert_eq!(1, results[0].distance);
+        assert_eq!(27898180, results[0].count);
     }
 
     #[test]
