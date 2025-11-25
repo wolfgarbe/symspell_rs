@@ -28,38 +28,40 @@
 // The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 // https://opensource.org/licenses/MIT
 
-#[cfg(not(all(target_feature = "aes", target_feature = "sse2")))]
-use ahash::RandomState;
 use ahash::{AHashMap, AHashSet};
+use itertools::Itertools;
 use std::cmp;
 use std::cmp::Ordering;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
-#[cfg(not(all(target_feature = "aes", target_feature = "sse2")))]
-use std::sync::LazyLock;
 use unicode_normalization::UnicodeNormalization;
 
 #[cfg(not(all(target_feature = "aes", target_feature = "sse2")))]
-pub static HASHER_64: LazyLock<RandomState> =
-    LazyLock::new(|| RandomState::with_seeds(808259318, 750368348, 84901999, 789810389));
+use ahash::RandomState;
+#[cfg(not(all(target_feature = "aes", target_feature = "sse2")))]
+use std::sync::LazyLock;
+
+#[cfg(not(all(target_feature = "aes", target_feature = "sse2")))]
+pub static HASHER_32: LazyLock<RandomState> =
+    LazyLock::new(|| RandomState::with_seeds(805272099, 242851902, 646123436, 591410655));
 
 // stable hash, faster, but not available on all platforms
 // https://github.com/tkaitchuck/aHash
 #[inline]
 #[cfg(all(target_feature = "aes", target_feature = "sse2"))]
-pub(crate) fn hash64(term_bytes: &[u8]) -> u64 {
-    use gxhash::gxhash64;
+pub(crate) fn hash32(term_bytes: &[u8]) -> u32 {
+    use gxhash::gxhash32;
 
-    gxhash64(term_bytes, 1234)
+    gxhash32(term_bytes, 1234)
 }
 
 // unstable hash, slower, but available on all platforms
 // https://github.com/ogxd/gxhash
 #[inline]
 #[cfg(not(all(target_feature = "aes", target_feature = "sse2")))]
-pub(crate) fn hash64(term_bytes: &[u8]) -> u64 {
-    HASHER_64.hash_one(term_bytes)
+pub(crate) fn hash32(term_bytes: &[u8]) -> u32 {
+    HASHER_32.hash_one(term_bytes) as u32
 }
 
 use std::{cmp::min, mem};
@@ -76,7 +78,7 @@ pub type FastVec<T> = SmallVec<[T; VEC_SIZE]>;
 /// Returns the edit distance, >= 0 representing the number of edits required to transform one string to the other,
 /// or -1 if the distance is greater than the specified max_distance.
 /// https://en.wikipedia.org/wiki/Damerau%E2%80%93Levenshtein_distance#Optimal_string_alignment_distance
-pub fn damerau_levenshtein_osa(a: &str, b: &str, max_distance: usize) -> i64 {
+pub fn damerau_levenshtein_osa(a: &str, b: &str, max_distance: usize) -> Option<usize> {
     let b_len = b.chars().count();
 
     //the edit distance can't be less than the difference of the lengths of the strings.
@@ -114,9 +116,9 @@ pub fn damerau_levenshtein_osa(a: &str, b: &str, max_distance: usize) -> i64 {
     }
 
     if prev_distances[b_len] <= max_distance {
-        prev_distances[b_len] as i64
+        Some(prev_distances[b_len])
     } else {
-        -1
+        None
     }
 }
 
@@ -258,7 +260,7 @@ pub struct Composition {
     // the word segmented and spelling corrected string,
     pub segmented_string: String,
     // the Edit distance sum between input string and corrected string,
-    pub distance_sum: i64,
+    pub distance_sum: usize,
     // the Sum of word occurence probabilities in log scale (a measure of how common and probable the corrected segmentation is).
     pub prob_log_sum: f64,
 }
@@ -280,7 +282,7 @@ pub struct Suggestion {
     /// The suggested correctly spelled word.
     pub term: String,
     /// Edit distance between searched for word and suggestion.
-    pub distance: i64,
+    pub distance: usize,
     /// Frequency of suggestion in the dictionary (a measure of how common the word is).
     pub count: usize,
 }
@@ -294,7 +296,7 @@ impl Suggestion {
         }
     }
 
-    fn new(term: impl Into<String>, distance: i64, count: usize) -> Suggestion {
+    fn new(term: impl Into<String>, distance: usize, count: usize) -> Suggestion {
         Suggestion {
             term: term.into(),
             distance,
@@ -342,40 +344,88 @@ pub enum Verbosity {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// SymSpell spell checker and corrector.
 pub struct SymSpell {
-    // Maximum edit distance for dictionary precalculation.
-    max_dictionary_edit_distance: i64,
-    // The length of word prefixes, from which deletes are generated. (5..7).
-    prefix_length: i64,
-    // The minimum frequency count for dictionary words to be considered a valid for spelling correction.
+    /// Maximum edit distance for dictionary precalculation.
+    max_dictionary_edit_distance: usize,
+    /// Term length thresholds for each edit distance
+    ///   None: max_dictionary_edit_distance for all terms lengths
+    ///   Some([4].into()): max_dictionary_edit_distance for all terms lengths >= 4,
+    ///   Some([2,8].into()): max_dictionary_edit_distance for all terms lengths >=2, max_dictionary_edit_distance +1 for all terms for lengths>=8
+    ///   ⚠️ The resulting maximum edit distance defined in lookup() for each term length (max_edit_distance + term_length_threshold) must be 
+    ///   <= the corresponding maximum edit distance defined for each term length in SymSpell::new() used for creation of dictionary structures.
+    term_length_threshold: Option<Vec<usize>>,
+    /// The length of word prefixes, from which deletes are generated. (5..7).
+    prefix_length: usize,
+    /// The minimum frequency count for dictionary words to be considered a valid for spelling correction.
     count_threshold: usize,
-    // Number of all words in the corpus used to generate the frequency dictionary
-    // this is used to calculate the word occurrence probability p from word counts c : p=c/N
-    // N equals the sum of all counts c in the dictionary only if the dictionary is complete, but not if the dictionary is truncated or filtered
+    /// Number of all words in the corpus used to generate the frequency dictionary
+    /// this is used to calculate the word occurrence probability p from word counts c : p=c/N
+    /// N equals the sum of all counts c in the dictionary only if the dictionary is complete, but not if the dictionary is truncated or filtered
     corpus_word_count: usize,
-    // Maximum dictionary term length
-    max_dictionary_term_length: i64,
-    // Dictionary that contains a mapping of lists of suggested correction words to the hashCodes
-    // of the original words and the deletes derived from them. Collisions of hashCodes is tolerated,
-    // because suggestions are ultimately verified via an edit distance function.
-    // A list of suggestions might have a single suggestion, or multiple suggestions.
-    deletes: AHashMap<u64, Vec<Box<str>>>,
+    /// Maximum dictionary term length
+    max_dictionary_term_length: usize,
+    /// Dictionary that contains a mapping of lists of suggested correction words to the hashCodes
+    /// of the original words and the deletes derived from them. Collisions of hashCodes is tolerated,
+    /// because suggestions are ultimately verified via an edit distance function.
+    /// A list of suggestions might have a single suggestion, or multiple suggestions.
+    deletes: AHashMap<u32, Vec<Box<str>>>,
     // Dictionary of unique correct spelling words, and the frequency count for each word.
     words: AHashMap<Box<str>, usize>,
-    // Bigrams optionally used for improved correction quality in lookup_coompound
+    /// Bigrams optionally used for improved correction quality in lookup_coompound
     bigrams: AHashMap<Box<str>, usize>,
-    // Minimum bigram count in the bigram dictionary
+    /// Minimum bigram count in the bigram dictionary
     bigram_min_count: usize,
+}
+
+// inexpensive and language independent: only deletes, no transposes + replaces + inserts
+// replaces and inserts are expensive and language dependent (Chinese has 70,000 Unicode Han characters)
+fn edits(
+    word: &str,
+    edit_distance: usize,
+    max_term_edit_distance: usize,
+    delete_words: &mut AHashSet<String>,
+) {
+    let edit_distance = edit_distance + 1;
+    let word_len = len(word);
+
+    if word_len > 1 {
+        for i in 0..word_len {
+            let delete = remove(word, i);
+
+            if !delete_words.contains(&delete) {
+                delete_words.insert(delete.clone());
+
+                //max_term_edit_distance dependent on term_length_threshold
+                if edit_distance < max_term_edit_distance {
+                    edits(&delete, edit_distance, max_term_edit_distance, delete_words);
+                }
+            }
+        }
+    }
 }
 
 impl SymSpell {
     /// Creates a new SymSpell instance.
+    ///  
+    /// # Arguments
+    ///
+    /// * `max_dictionary_edit_distance` - Maximum edit distance for dictionary precalculation.
+    /// * `term_length_threshold` - Term length thresholds for each edit distance.
+    ///   None: max_dictionary_edit_distance for all terms lengths
+    ///   Some([4].into()): max_dictionary_edit_distance for all terms lengths >= 4,
+    ///   Some([2,8].into()): max_dictionary_edit_distance for all terms lengths >=2, max_dictionary_edit_distance +1 for all terms for lengths>=8
+    ///   ⚠️ The resulting maximum edit distance defined in lookup() for each term length (max_edit_distance + term_length_threshold) must be 
+    ///   <= the corresponding maximum edit distance defined for each term length in SymSpell::new() used for creation of dictionary structures.
+    /// * `prefix_length` - The length of word prefixes, from which deletes are generated. (5..7).
+    /// * `count_threshold` - The minimum frequency count for dictionary words to be considered a valid for spelling correction.
     pub fn new(
-        max_dictionary_edit_distance: i64,
-        prefix_length: i64,
+        max_dictionary_edit_distance: usize,
+        term_length_threshold: Option<Vec<usize>>,
+        prefix_length: usize,
         count_threshold: usize,
     ) -> Self {
         Self {
             max_dictionary_edit_distance, //2
+            term_length_threshold,        //vec![]
             prefix_length,                //7
             count_threshold,              //1
             corpus_word_count: 1_024_908_267_229,
@@ -392,6 +442,34 @@ impl SymSpell {
         self.words.len()
     }
 
+    /// Write the dictionary to a CSV file.
+    /// Useful when the dictionary was incrementally built/updated with create_dictionary_entry.
+    /// Entries are sorted by frequency count descending.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path+filename of the file.
+    /// * `separator` - Separator between word and frequency
+    pub fn save_dictionary(
+        &self,
+        path: &Path,
+        separator: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let file = File::create(path)?;
+        let mut writer = BufWriter::new(file);
+
+        for (entry, count) in self
+            .words
+            .iter()
+            .sorted_unstable_by(|a, b| Ord::cmp(&b.1, &a.1))
+        {
+            writeln!(writer, "{}{}{}", entry, separator, count)?;
+        }
+        writer.flush()?;
+
+        Ok(())
+    }
+
     /// Load multiple dictionary entries from a file of word/frequency count pairs.
     ///
     /// # Arguments
@@ -402,23 +480,19 @@ impl SymSpell {
     /// * `separator` - Separator between word and frequency
     pub fn load_dictionary(
         &mut self,
-        corpus: &str,
-        term_index: i64,
-        count_index: i64,
+        path: &Path,
+        term_index: usize,
+        count_index: usize,
         separator: &str,
-    ) -> bool {
-        if !Path::new(corpus).exists() {
-            return false;
-        }
-
-        let file = File::open(corpus).expect("file not found");
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let file = File::open(path)?;
         let sr = BufReader::new(file);
 
         for line in sr.lines() {
-            let line_str = line.unwrap();
+            let line_str = line?;
             self.load_dictionary_line(&line_str, term_index, count_index, separator);
         }
-        true
+        Ok(())
     }
 
     /// Load single dictionary entry from word/frequency count pair.
@@ -432,15 +506,15 @@ impl SymSpell {
     pub fn load_dictionary_line(
         &mut self,
         line: &str,
-        term_index: i64,
-        count_index: i64,
+        term_index: usize,
+        count_index: usize,
         separator: &str,
     ) -> bool {
         let line_parts: Vec<&str> = line.split(separator).collect();
         if line_parts.len() >= 2 {
             // let key = unidecode(line_parts[term_index as usize]);
-            let key = line_parts[term_index as usize].to_string();
-            let count = line_parts[count_index as usize].parse::<usize>().unwrap();
+            let key = line_parts[term_index].to_string();
+            let count = line_parts[count_index].parse::<usize>().unwrap();
 
             self.create_dictionary_entry(key, count);
         }
@@ -458,21 +532,18 @@ impl SymSpell {
     /// * `separator` - Separator between word and frequency
     pub fn load_bigram_dictionary(
         &mut self,
-        corpus: &str,
-        term_index: i64,
-        count_index: i64,
+        path: &Path,
+        term_index: usize,
+        count_index: usize,
         separator: &str,
-    ) -> bool {
-        if !Path::new(corpus).exists() {
-            return false;
-        }
-        let file = File::open(corpus).expect("file not found");
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let file = File::open(path)?;
         let sr = BufReader::new(file);
         for line in sr.lines() {
-            let line_str = line.unwrap();
+            let line_str = line?;
             self.load_bigram_dictionary_line(&line_str, term_index, count_index, separator);
         }
-        true
+        Ok(())
     }
 
     /// Load single dictionary entry from bigram/frequency count pair.
@@ -486,23 +557,19 @@ impl SymSpell {
     pub fn load_bigram_dictionary_line(
         &mut self,
         line: &str,
-        term_index: i64,
-        count_index: i64,
+        term_index: usize,
+        count_index: usize,
         separator: &str,
     ) -> bool {
         let line_parts: Vec<&str> = line.split(separator).collect();
         let line_parts_len = if separator == " " { 3 } else { 2 };
         if line_parts.len() >= line_parts_len {
             let key = if separator == " " {
-                [
-                    line_parts[term_index as usize],
-                    line_parts[(term_index + 1) as usize],
-                ]
-                .join(" ")
+                [line_parts[term_index], line_parts[term_index + 1]].join(" ")
             } else {
-                line_parts[term_index as usize].to_string()
+                line_parts[term_index].to_string()
             };
-            let count = line_parts[count_index as usize].parse::<usize>().unwrap();
+            let count = line_parts[count_index].parse::<usize>().unwrap();
             self.bigrams.insert(key.into_boxed_str(), count);
             if count < self.bigram_min_count {
                 self.bigram_min_count = count;
@@ -520,27 +587,59 @@ impl SymSpell {
     /// * `input` - The word being spell checked. Upper/lower case allowed.
     /// * `verbosity` - The value controlling the quantity/closeness of the retuned suggestions.
     /// * `max_edit_distance` - The maximum edit distance between input and suggested words.
+    /// * `term_length_threshold` - Term length thresholds for each edit distance.
+    ///   None: max_dictionary_edit_distance for all terms lengths
+    ///   Some([4].into()): max_dictionary_edit_distance for all terms lengths >= 4,
+    ///   Some([2,8].into()): max_dictionary_edit_distance for all terms lengths >=2, max_dictionary_edit_distance +1 for all terms for lengths>=8
+    ///   ⚠️ The resulting maximum edit distance defined in lookup() for each term length (max_edit_distance + term_length_threshold) must be 
+    ///   <= the corresponding maximum edit distance defined for each term length in SymSpell::new() used for creation of dictionary structures.
+    /// * `max_results` - Optional parameter to limit the number of suggestions returned.
     /// * `preserve_case` - Whether to preserve the letter case from input to suggestion.
     ///
     /// # Examples
     ///
     /// ```
     /// use symspell_rs::{SymSpell, Verbosity};
+    /// use std::path::Path;
     ///
-    /// let mut symspell: SymSpell = SymSpell::new(2, 7, 1);
-    /// symspell.load_dictionary("data/frequency_dictionary_en_82_765.txt", 0, 1, " ");
-    /// symspell.lookup("whatver", Verbosity::Top, 2,false);
+    /// let mut symspell: SymSpell = SymSpell::new(2,None, 7, 1);
+    /// symspell.load_dictionary(Path::new("data/frequency_dictionary_en_82_765.txt"), 0, 1, " ");
+    /// symspell.lookup("whatver", Verbosity::Top, 2,None,None,false);
     /// ```
     pub fn lookup(
         &self,
         input: &str,
         verbosity: Verbosity,
-        max_edit_distance: i64,
+        max_edit_distance: usize,
+        term_length_threshold: Option<Vec<usize>>,
+        max_results: Option<usize>,
         preserve_case: bool,
     ) -> Vec<Suggestion> {
-        if max_edit_distance > self.max_dictionary_edit_distance {
-            panic!("max_edit_distance is bigger than max_dictionary_edit_distance");
+        //todo: validate term_length_threshold
+        if max_edit_distance + term_length_threshold.as_ref().map_or(0, |x| x.len())
+            > self.max_dictionary_edit_distance
+                + self.term_length_threshold.as_ref().map_or(0, |x| x.len())
+        {
+            println!("max_edit_distance is bigger than max_dictionary_edit_distance");
         }
+
+        //len(input)
+        //check it for all term lengths vs check it only for current length? eigentlich reicht current, aber dann taucht der fehler später wieder auf
+
+        //max_term_edit_distance dependent on term_length_threshold
+        let max_term_edit_distance =
+            term_length_threshold.map_or(max_edit_distance, |term_length_threshold| {
+                let term_len = len(input);
+                let mut max_term_edit_distance = 0;
+                for (i, threshold) in term_length_threshold.iter().enumerate() {
+                    if term_len >= *threshold {
+                        max_term_edit_distance = max_edit_distance + i
+                    } else {
+                        break;
+                    }
+                }
+                max_term_edit_distance
+            });
 
         let mut suggestions: Vec<Suggestion> = Vec::new();
 
@@ -552,9 +651,11 @@ impl SymSpell {
         };
         let input = input_lower_case.as_str();
 
-        let input_len = len(input) as i64;
+        let input_len = len(input);
         // early termination - word is too big to possibly match any words
-        if input_len - max_edit_distance > self.max_dictionary_term_length {
+        if input_len as isize - max_term_edit_distance as isize
+            > self.max_dictionary_term_length as isize
+        {
             return suggestions;
         }
 
@@ -571,13 +672,13 @@ impl SymSpell {
         }
 
         //early termination, if we only want to check if word in dictionary or get its frequency e.g. for word segmentation
-        if max_edit_distance == 0 {
+        if max_term_edit_distance == 0 {
             return suggestions;
         }
 
         hashset2.insert(input.to_string());
 
-        let mut max_edit_distance2 = max_edit_distance;
+        let mut max_edit_distance2 = max_term_edit_distance;
         let mut candidate_pointer = 0;
         let mut candidates = Vec::new();
 
@@ -585,7 +686,7 @@ impl SymSpell {
 
         if input_prefix_len > self.prefix_length {
             input_prefix_len = self.prefix_length;
-            candidates.push(slice(input, 0, input_prefix_len as usize));
+            candidates.push(slice(input, 0, input_prefix_len));
         } else {
             candidates.push(input.to_string());
         }
@@ -593,12 +694,12 @@ impl SymSpell {
         while candidate_pointer < candidates.len() {
             let candidate = &candidates.get(candidate_pointer).unwrap().clone();
             candidate_pointer += 1;
-            let candidate_len = len(candidate) as i64;
-            let length_diff = input_prefix_len - candidate_len;
+            let candidate_len = len(candidate);
+            let length_diff = input_prefix_len as isize - candidate_len as isize;
 
             //save some time - early termination
             //if canddate distance is already higher than suggestion distance, than there are no better suggestions to be expected
-            if length_diff > max_edit_distance2 {
+            if length_diff > max_edit_distance2 as isize {
                 // skip to next candidate if Verbosity.All, look no further if Verbosity.Top or Closest
                 // (candidates are ordered by delete distance, so none are closer than current)
                 if verbosity == Verbosity::All {
@@ -608,19 +709,19 @@ impl SymSpell {
             }
 
             //read candidate entry from dictionary
-            let hash = hash64(candidate.as_bytes());
+            let hash = hash32(candidate.as_bytes());
             if self.deletes.contains_key(&hash) {
                 let dict_suggestions = &self.deletes[&hash];
 
                 //iterate through suggestions (to other correct dictionary items) of delete item and add them to suggestion list
                 for suggestion in dict_suggestions {
-                    let suggestion_len = len(suggestion) as i64;
+                    let suggestion_len = len(suggestion);
 
                     if suggestion.as_ref() == input {
                         continue;
                     }
 
-                    if (suggestion_len - input_len).abs() > max_edit_distance2
+                    if suggestion_len.abs_diff(input_len) > max_edit_distance2
                         || suggestion_len < candidate_len
                         || (suggestion_len == candidate_len && suggestion.as_ref() != candidate)
                     {
@@ -667,7 +768,7 @@ impl SymSpell {
                     // then editdistance>maxEditDistance and no need for Levenshtein calculation
                     // (inputLen >= prefixLength) && (suggestionLen >= prefixLength)
                     } else if self.has_different_suffix(
-                        max_edit_distance,
+                        max_term_edit_distance,
                         input,
                         input_len,
                         candidate_len,
@@ -693,12 +794,13 @@ impl SymSpell {
                         }
                         hashset2.insert(suggestion.to_string());
 
-                        distance =
-                            damerau_levenshtein_osa(input, suggestion, max_edit_distance2 as usize);
-
-                        if distance < 0 {
+                        distance = if let Some(distance) =
+                            damerau_levenshtein_osa(input, suggestion, max_edit_distance2)
+                        {
+                            distance
+                        } else {
                             continue;
-                        }
+                        };
                     }
                     //save some time
                     //do not process higher distances than those already found, if verbosity<All (note: maxEditDistance2 will always equal maxEditDistance when Verbosity::All)
@@ -739,15 +841,16 @@ impl SymSpell {
             //add edits
             //derive edits (deletes) from candidate (input) and add them to candidates list
             //this is a recursive process until the maximum edit distance has been reached
-            if length_diff < max_edit_distance && candidate_len <= self.prefix_length {
+            if length_diff < max_term_edit_distance as isize && candidate_len <= self.prefix_length
+            {
                 //save some time
                 //do not create edits with edit distance smaller than suggestions already found
-                if verbosity != Verbosity::All && length_diff >= max_edit_distance2 {
+                if verbosity != Verbosity::All && length_diff >= max_edit_distance2 as isize {
                     continue;
                 }
 
                 for i in 0..candidate_len {
-                    let delete = remove(candidate, i as usize);
+                    let delete = remove(candidate, i);
 
                     if !hashset1.contains(&delete) {
                         hashset1.insert(delete.clone());
@@ -769,6 +872,9 @@ impl SymSpell {
             }
         }
 
+        if let Some(max_results) = max_results {
+            suggestions.truncate(max_results);
+        }
         suggestions
     }
 
@@ -790,15 +896,16 @@ impl SymSpell {
     ///
     /// ```
     /// use symspell_rs::{SymSpell};
+    /// use std::path::Path;
     ///
-    /// let mut symspell: SymSpell = SymSpell::new(2, 7, 1);
-    /// symspell.load_dictionary("data/frequency_dictionary_en_82_765.txt", 0, 1, " ");
+    /// let mut symspell: SymSpell = SymSpell::new(2, None,7, 1);
+    /// symspell.load_dictionary(Path::new("data/frequency_dictionary_en_82_765.txt"), 0, 1, " ");
     /// symspell.lookup_compound("whereis th elove", 2, false);
     /// ```
     pub fn lookup_compound(
         &self,
         input: &str,
-        edit_distance_max: i64,
+        edit_distance_max: usize,
         preserve_case: bool,
     ) -> Vec<Suggestion> {
         //parse input string into single terms
@@ -810,7 +917,7 @@ impl SymSpell {
         //translate every term to its best suggestion, otherwise it remains unchanged
         let mut last_combi = false;
         for (i, term) in term_list1.iter().enumerate() {
-            suggestions = self.lookup(term, Verbosity::Top, edit_distance_max, false);
+            suggestions = self.lookup(term, Verbosity::Top, edit_distance_max, None, None, false);
 
             //combi check, always before split
             if i > 0 && !last_combi {
@@ -818,6 +925,8 @@ impl SymSpell {
                     &[term_list1[i - 1].as_str(), term_list1[i].as_str()].join(""),
                     Verbosity::Top,
                     edit_distance_max,
+                    None,
+                    None,
                     false,
                 );
 
@@ -842,12 +951,11 @@ impl SymSpell {
 
                     //distance1=edit distance between 2 split terms und their best corrections : as comparative value for the combination
                     let distance1 = best1.distance + best2.distance;
-                    if (distance1 >= 0)
-                        && (suggestions_combi[0].distance + 1 < distance1
-                            || (suggestions_combi[0].distance + 1 == distance1
-                                && (suggestions_combi[0].count
+                    if suggestions_combi[0].distance + 1 < distance1
+                        || (suggestions_combi[0].distance + 1 == distance1
+                            && (suggestions_combi[0].count
                                     // best1 / corpus * best1 / corpus * corpus
-                                    > (best1.count as f64 / self.corpus_word_count as f64 * best2.count as f64) as usize)))
+                                    > (best1.count as f64 / self.corpus_word_count as f64 * best2.count as f64) as usize))
                     {
                         suggestions_combi[0].distance += 1;
                         let last_i = suggestion_parts.len() - 1;
@@ -880,11 +988,23 @@ impl SymSpell {
                         let part1 = slice(&term_list1[i], 0, j);
                         let part2 = slice(&term_list1[i], j, term_length);
                         let mut suggestion_split = Suggestion::empty();
-                        let suggestions1 =
-                            self.lookup(&part1, Verbosity::Top, edit_distance_max, false);
+                        let suggestions1 = self.lookup(
+                            &part1,
+                            Verbosity::Top,
+                            edit_distance_max,
+                            None,
+                            None,
+                            false,
+                        );
                         if !suggestions1.is_empty() {
-                            let suggestions2 =
-                                self.lookup(&part2, Verbosity::Top, edit_distance_max, false);
+                            let suggestions2 = self.lookup(
+                                &part2,
+                                Verbosity::Top,
+                                edit_distance_max,
+                                None,
+                                None,
+                                false,
+                            );
 
                             if !suggestions2.is_empty() {
                                 //select best suggestion for split pair
@@ -892,6 +1012,7 @@ impl SymSpell {
                                     [suggestions1[0].term.as_str(), suggestions2[0].term.as_str()]
                                         .join(" ");
 
+                                /*
                                 let mut distance2 = damerau_levenshtein_osa(
                                     &term_list1[i],
                                     &suggestion_split.term,
@@ -901,6 +1022,17 @@ impl SymSpell {
                                 if distance2 < 0 {
                                     distance2 = edit_distance_max + 1;
                                 }
+                                */
+
+                                let distance2 = if let Some(d) = damerau_levenshtein_osa(
+                                    &term_list1[i],
+                                    &suggestion_split.term,
+                                    edit_distance_max,
+                                ) {
+                                    d
+                                } else {
+                                    edit_distance_max + 1
+                                };
 
                                 if !suggestion_split_best.term.is_empty() {
                                     if distance2 > suggestion_split_best.distance {
@@ -1011,7 +1143,8 @@ impl SymSpell {
 
         let output = s.trim();
         suggestion.count = tmp_count as usize;
-        suggestion.distance = damerau_levenshtein_osa(&input.to_lowercase(), output, usize::MAX);
+        suggestion.distance =
+            damerau_levenshtein_osa(&input.to_lowercase(), output, usize::MAX).unwrap();
 
         //transfer case from input to suggestion
         suggestion.term = if preserve_case {
@@ -1048,12 +1181,13 @@ impl SymSpell {
     ///
     /// ```
     /// use symspell_rs::{SymSpell, Verbosity};
+    /// use std::path::Path;
     ///
-    /// let mut symspell: SymSpell = SymSpell::new(2, 7, 1);
-    /// symspell.load_dictionary("data/frequency_dictionary_en_82_765.txt", 0, 1, " ");
+    /// let mut symspell: SymSpell = SymSpell::new(2, None, 7, 1);
+    /// symspell.load_dictionary(Path::new("data/frequency_dictionary_en_82_765.txt"), 0, 1, " ");
     /// symspell.word_segmentation("itwas", 2);
     /// ```
-    pub fn word_segmentation(&self, input: &str, max_edit_distance: i64) -> Composition {
+    pub fn word_segmentation(&self, input: &str, max_edit_distance: usize) -> Composition {
         // Normalize ligatures: "scientiﬁc" "ﬁelds" "ﬁnal"
         let input = &unicode_normalization_form_kc(input).replace('\u{002D}', ""); // Remove U+002D (hyphen-minus);
 
@@ -1065,13 +1199,13 @@ impl SymSpell {
         //outer loop (column): all possible part start positions
         for j in 0..asize {
             //inner loop (row): all possible part lengths (from start position): part can't be bigger than longest word in dictionary (other than long unknown word)
-            let imax = min(asize - j, self.max_dictionary_term_length as usize);
+            let imax = min(asize - j, self.max_dictionary_term_length);
             for i in 1..=imax {
                 //get top spelling correction/ed for part
                 let mut part = slice(input, j, j + i);
 
                 let mut sep_len = 0;
-                let mut top_ed: i64 = 0;
+                let mut top_ed = 0;
 
                 let first_char = at(&part, 0).unwrap();
                 if first_char.is_whitespace() {
@@ -1083,15 +1217,16 @@ impl SymSpell {
                 }
 
                 //remove space from part1, add number of removed spaces to topEd
-                top_ed += part.len() as i64;
+                top_ed += part.len();
                 //remove space
                 part = part.replace(" ", "");
-                top_ed -= part.len() as i64;
+                top_ed -= part.len();
 
                 // Lookup against the lowercase term
                 // word_segmentation works on text with any case which is retained in the output segmentation.
                 // word_segmentation works on noisy text with spelling mistakes, which are corrected in the output segmentation.
-                let results = self.lookup(&part, Verbosity::Top, max_edit_distance, true);
+                let results =
+                    self.lookup(&part, Verbosity::Top, max_edit_distance, None, None, true);
                 let top_prob_log = if !results.is_empty() {
                     //retain/preserve/transfer letter case during correction
                     if results[0].distance > 0 {
@@ -1113,7 +1248,7 @@ impl SymSpell {
 
                     //default, if word not found
                     //otherwise long input text would win as long unknown word (with ed=edmax+1 ), although there there should many spaces inserted
-                    top_ed += part_len as i64;
+                    top_ed += part_len;
                     (10.0 / (self.corpus_word_count as f64 * 10.0f64.powf(part_len as f64))).log10()
                 };
 
@@ -1125,7 +1260,7 @@ impl SymSpell {
                         distance_sum: top_ed,
                         prob_log_sum: top_prob_log,
                     };
-                } else if i as i64 == self.max_dictionary_term_length
+                } else if i == self.max_dictionary_term_length
                     //replace values if better probabilityLogSum, if same edit distance OR one space difference 
                     || (((compositions[ci].distance_sum + top_ed == compositions[di].distance_sum)
                         || (compositions[ci].distance_sum + sep_len + top_ed
@@ -1175,9 +1310,9 @@ impl SymSpell {
     fn delete_in_suggestion_prefix(
         &self,
         delete: &str,
-        delete_len: i64,
+        delete_len: usize,
         suggestion: &str,
-        suggestion_len: i64,
+        suggestion_len: usize,
     ) -> bool {
         if delete_len == 0 {
             return true;
@@ -1201,133 +1336,145 @@ impl SymSpell {
         true
     }
 
-    // Create/Update an entry in the dictionary
-    // For every word there are deletes with an edit distance of 1..maxEditDistance created and added to the
-    // dictionary. Every delete entry has a suggestions list, which points to the original term(s) it was created from.
-    // The dictionary may be dynamically updated (word frequency and new words) at any time by calling CreateDictionaryEntry
-    // # Arguments
-    //
-    // * `key` - The word to add to dictionary.
-    // * `count` - The frequency count for word.
-    //
-    // Returns True if the word was added as a new correctly spelled word,
-    // or false if the word is added as a below threshold word, or updates an
-    // existing correctly spelled word.
-    fn create_dictionary_entry<K>(&mut self, key: K, count: usize) -> bool
+    /// Create/Update an entry in the dictionary
+    /// For every word there are deletes with an edit distance of 1..maxEditDistance created and added to the
+    /// dictionary. Every delete entry has a suggestions list, which points to the original term(s) it was created from.
+    /// The dictionary may be dynamically updated (word frequency and new words) at any time by calling CreateDictionaryEntry
+    /// # Arguments
+    ///
+    /// * `term` - The word to add to dictionary.
+    /// * `count` - The frequency count for word.
+    ///
+    /// Returns True if the word is added or updated and the sum count reaches or exceeds the threshold for the first time,
+    /// making it a new entry valid for suggestions, otherwise False.
+    pub fn create_dictionary_entry<T>(&mut self, term: T, count: usize) -> bool
     where
-        K: Clone + AsRef<str> + Into<String>,
+        T: Clone + AsRef<str> + Into<String>,
     {
-        if count < self.count_threshold {
+        // update words
+        let entry = self
+            .words
+            .entry(term.clone().into().into_boxed_str())
+            .or_insert(0);
+        if *entry == 0 {
+            *entry = count;
+            if count < self.count_threshold {
+                return false;
+            }
+        } else {
+            let old_count = *entry;
+            let updated_count = if usize::MAX - *entry > count {
+                *entry + count
+            } else {
+                usize::MAX
+            };
+            *entry = updated_count;
+
+            if updated_count < self.count_threshold || old_count >= self.count_threshold {
+                return false;
+            }
+        }
+
+        // create deletes
+        let term_len = len(term.as_ref());
+
+        //do not create deletes for short words below threshold
+        //todo: move to start of function: latency of len vs. words entry + count?
+        if self
+            .term_length_threshold
+            .as_ref()
+            .is_some_and(|term_length_threshold| {
+                !term_length_threshold.is_empty() && term_len < term_length_threshold[0]
+            })
+        {
             return false;
         }
 
-        let key_clone = key.clone().into().into_boxed_str();
+        let max_term_edit_distance = self.term_length_threshold.as_ref().map_or(
+            self.max_dictionary_edit_distance,
+            |term_length_threshold| {
+                //max_term_edit_distance dependent on term_length_threshold
+                let mut max_term_edit_distance = 0;
+                for (i, threshold) in term_length_threshold.iter().enumerate() {
+                    if term_len >= *threshold {
+                        max_term_edit_distance = self.max_dictionary_edit_distance + i
+                    } else {
+                        break;
+                    }
+                }
+                max_term_edit_distance
+            },
+        );
 
-        match self.words.get(key.as_ref()) {
-            Some(i) => {
-                let updated_count = if usize::MAX - i > count {
-                    i + count
-                } else {
-                    usize::MAX
-                };
-                self.words.insert(key_clone, updated_count);
-                return false;
-            }
-            None => {
-                self.words.insert(key_clone, count);
-            }
+        //collect max_dictionary_term_length
+        if term_len > self.max_dictionary_term_length {
+            self.max_dictionary_term_length = term_len;
         }
 
-        let key_len = len(key.as_ref());
-
-        if key_len as i64 > self.max_dictionary_term_length {
-            self.max_dictionary_term_length = key_len as i64;
-        }
-
-        let edits = self.edits_prefix(key.as_ref());
+        let edits = self.edits_prefix(term.as_ref(), max_term_edit_distance);
 
         for delete in edits {
-            let delete_hash = hash64(delete.as_bytes());
+            let delete_hash = hash32(delete.as_bytes());
 
             self.deletes
                 .entry(delete_hash)
-                .and_modify(|e| e.push(key.clone().into().into_boxed_str()))
-                .or_insert_with(|| vec![key.clone().into().into_boxed_str()]);
+                .and_modify(|e| e.push(term.clone().into().into_boxed_str()))
+                .or_insert_with(|| vec![term.clone().into().into_boxed_str()]);
         }
 
         true
     }
 
-    fn edits_prefix(&self, key: &str) -> AHashSet<String> {
+    fn edits_prefix(&self, key: &str, max_term_edit_distance: usize) -> AHashSet<String> {
         let mut hash_set = AHashSet::new();
 
-        let key_len = len(key) as i64;
+        let key_len = len(key);
 
         if key_len <= self.max_dictionary_edit_distance {
             hash_set.insert("".to_string());
         }
 
         if key_len > self.prefix_length {
-            let shortened_key = slice(key, 0, self.prefix_length as usize);
+            let shortened_key = slice(key, 0, self.prefix_length);
             hash_set.insert(shortened_key.clone());
-            self.edits(&shortened_key, 0, &mut hash_set);
+            edits(&shortened_key, 0, max_term_edit_distance, &mut hash_set);
         } else {
             hash_set.insert(key.to_string());
-            self.edits(key, 0, &mut hash_set);
+            edits(key, 0, max_term_edit_distance, &mut hash_set);
         };
 
         hash_set
     }
 
-    // inexpensive and language independent: only deletes, no transposes + replaces + inserts
-    // replaces and inserts are expensive and language dependent (Chinese has 70,000 Unicode Han characters)
-    fn edits(&self, word: &str, edit_distance: i64, delete_words: &mut AHashSet<String>) {
-        let edit_distance = edit_distance + 1;
-        let word_len = len(word);
-
-        if word_len > 1 {
-            for i in 0..word_len {
-                let delete = remove(word, i);
-
-                if !delete_words.contains(&delete) {
-                    delete_words.insert(delete.clone());
-
-                    if edit_distance < self.max_dictionary_edit_distance {
-                        self.edits(&delete, edit_distance, delete_words);
-                    }
-                }
-            }
-        }
-    }
-
     fn has_different_suffix(
         &self,
-        max_edit_distance: i64,
+        max_edit_distance: usize,
         input: &str,
-        input_len: i64,
-        candidate_len: i64,
+        input_len: usize,
+        candidate_len: usize,
         suggestion: &str,
-        suggestion_len: i64,
+        suggestion_len: usize,
     ) -> bool {
         // handles the shortcircuit of min_distance
         // assignment when first boolean expression
         // evaluates to false
-        let min = if self.prefix_length - max_edit_distance == candidate_len {
-            min(input_len, suggestion_len) - self.prefix_length
-        } else {
-            0
-        };
+        let min =
+            if self.prefix_length as isize - max_edit_distance as isize == candidate_len as isize {
+                min(input_len, suggestion_len) as isize - self.prefix_length as isize
+            } else {
+                0
+            };
 
         (self.prefix_length - max_edit_distance == candidate_len)
-            && (((min - self.prefix_length) > 1)
-                && (suffix(input, (input_len + 1 - min) as usize)
-                    != suffix(suggestion, (suggestion_len + 1 - min) as usize)))
+            && (((min - self.prefix_length as isize) > 1)
+                && (suffix(input, input_len + 1 - min as usize)
+                    != suffix(suggestion, suggestion_len + 1 - min as usize)))
             || ((min > 0)
-                && (at(input, (input_len - min) as isize)
-                    != at(suggestion, (suggestion_len - min) as isize))
-                && ((at(input, (input_len - min - 1) as isize)
-                    != at(suggestion, (suggestion_len - min) as isize))
-                    || (at(input, (input_len - min) as isize)
-                        != at(suggestion, (suggestion_len - min - 1) as isize))))
+                && (at(input, (input_len - min as usize) as isize)
+                    != at(suggestion, (suggestion_len - min as usize) as isize))
+                && ((at(input, (input_len - min as usize - 1) as isize)
+                    != at(suggestion, (suggestion_len - min as usize) as isize))
+                    || (at(input, (input_len - min as usize) as isize)
+                        != at(suggestion, (suggestion_len - min as usize - 1) as isize))))
     }
 }

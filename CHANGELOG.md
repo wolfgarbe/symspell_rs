@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.8.0] - 2025-17-05
+
+### Added
+
+- `create_dictionary_entry` exposed as public method, for incremental dictionary update.
+- `save_dictionary` to write the dictionary to a CSV file.
+- `lookup()` with new parameter `max_results` to limit the number of suggestion returned.
+- `SymSpell::new()` and `lookup()` with new parameter `term_length_threshold`: A vector of term length thresholds for each maximum edit distance.  
+  Allowing higher maximum edit distances for longer terms, with minimal additional latency and memory consumption.
+  - None: max_dictionary_edit_distance for all terms lengths
+  - Some([4].into()): max_dictionary_edit_distance for all terms lengths >= 4,
+  - Some([2,8].into()): max_dictionary_edit_distance for all terms lengths >=2, max_dictionary_edit_distance +1 for all terms for lengths>=8
+
+### Fixed
+
+- In `create_dictionary_entry` words weren't added as stub for count < count_threshold, which is required for correct incremental directory entry creation and counting.
+
+### Changed 
+
+- Refactoring.
+- hash64 replaced with hash32.
+
 ## [6.7.8] - 2025-15-05
 
 ### Fixed

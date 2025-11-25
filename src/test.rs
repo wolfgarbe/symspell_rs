@@ -1,5 +1,7 @@
 #[cfg(test)]
 mod tests {
+    use std::{path::Path, vec};
+
     use crate::{
         SymSpell, Verbosity,
         symspell::{transfer_case, unicode_normalization_form_kc},
@@ -8,12 +10,17 @@ mod tests {
     #[test]
     fn test_lookup() {
         let edit_distance_max = 2;
-        let mut symspell = SymSpell::new(edit_distance_max, 7, 1);
-        symspell.load_dictionary("./data/frequency_dictionary_en_82_765.txt", 0, 1, " ");
+        let mut symspell = SymSpell::new(edit_distance_max, None, 7, 1);
+        _ = symspell.load_dictionary(
+            Path::new("./data/frequency_dictionary_en_82_765.txt"),
+            0,
+            1,
+            " ",
+        );
 
         let typo = "hous";
         let correction = "house";
-        let results = symspell.lookup(typo, Verbosity::Top, edit_distance_max, false);
+        let results = symspell.lookup(typo, Verbosity::Top, edit_distance_max, None, None, false);
         assert_eq!(1, results.len());
         assert_eq!(correction, results[0].term);
         assert_eq!(1, results[0].distance);
@@ -22,7 +29,7 @@ mod tests {
         // case-insensitive lookup, but preserve original case in suggestion
         let typo = "Hous";
         let correction = "House";
-        let results = symspell.lookup(typo, Verbosity::Top, edit_distance_max, true);
+        let results = symspell.lookup(typo, Verbosity::Top, edit_distance_max, None, None, true);
         assert_eq!(1, results.len());
         assert_eq!(correction, results[0].term);
         assert_eq!(1, results[0].distance);
@@ -30,7 +37,7 @@ mod tests {
 
         let typo = "warsa";
         let correction = "wars";
-        let results = symspell.lookup(typo, Verbosity::Top, edit_distance_max, false);
+        let results = symspell.lookup(typo, Verbosity::Top, edit_distance_max, None, None, false);
         assert_eq!(1, results.len());
         assert_eq!(correction, results[0].term);
         assert_eq!(1, results[0].distance);
@@ -38,7 +45,14 @@ mod tests {
 
         let typo = "warsa";
         let correction = "wars";
-        let results = symspell.lookup(typo, Verbosity::Closest, edit_distance_max, false);
+        let results = symspell.lookup(
+            typo,
+            Verbosity::Closest,
+            edit_distance_max,
+            None,
+            None,
+            false,
+        );
         assert_eq!(3, results.len());
         assert_eq!(correction, results[0].term);
         assert_eq!(1, results[0].distance);
@@ -46,7 +60,7 @@ mod tests {
 
         let typo = "warsa";
         let correction = "wars";
-        let results = symspell.lookup(typo, Verbosity::All, edit_distance_max, false);
+        let results = symspell.lookup(typo, Verbosity::All, edit_distance_max, None, None, false);
         assert_eq!(112, results.len());
         assert_eq!(correction, results[0].term);
         assert_eq!(1, results[0].distance);
@@ -54,12 +68,96 @@ mod tests {
     }
 
     #[test]
+    fn test_lookup_threshold() {
+        let edit_distance_max = 1;
+        let mut symspell = SymSpell::new(edit_distance_max, Some(vec![2, 9]), 7, 1);
+        _ = symspell.load_dictionary(
+            Path::new("./data/frequency_dictionary_en_82_765.txt"),
+            0,
+            1,
+            " ",
+        );
+
+        //1 error corrected
+        let typo = "amd";
+        let correction = "and";
+        let results = symspell.lookup(typo, Verbosity::Top, edit_distance_max, None, None, false);
+        assert_eq!(1, results.len());
+        assert_eq!(correction, results[0].term);
+        assert_eq!(1, results[0].distance);
+        assert_eq!(12997637966, results[0].count);
+
+        //1 error not corrected
+        let typo = "amd";
+        let _correction = "and";
+        let results = symspell.lookup(
+            typo,
+            Verbosity::Top,
+            edit_distance_max,
+            Some(vec![4, 9]),
+            None,
+            false,
+        );
+        assert_eq!(0, results.len());
+
+        //1 error corrected
+        let typo = "industrx";
+        let correction = "industry";
+        let results = symspell.lookup(
+            typo,
+            Verbosity::Top,
+            edit_distance_max,
+            Some(vec![4, 9]),
+            None,
+            false,
+        );
+        assert_eq!(1, results.len());
+        assert_eq!(correction, results[0].term);
+        assert_eq!(1, results[0].distance);
+        assert_eq!(160812623, results[0].count);
+
+        //2 errors not corrected
+        let typo = "idustrx";
+        let _correction = "industry";
+        let results = symspell.lookup(
+            typo,
+            Verbosity::Top,
+            edit_distance_max,
+            Some(vec![4, 9]),
+            None,
+            false,
+        );
+        assert_eq!(0, results.len());
+
+        //2 errors corrected
+        let typo = "indastrialication";
+        let correction = "industrialization";
+        let results = symspell.lookup(
+            typo,
+            Verbosity::Top,
+            edit_distance_max,
+            Some(vec![4, 9]),
+            None,
+            false,
+        );
+        assert_eq!(1, results.len());
+        assert_eq!(correction, results[0].term);
+        assert_eq!(2, results[0].distance);
+        assert_eq!(573050, results[0].count);
+    }
+
+    #[test]
     fn test_lookup_compound() {
         let edit_distance_max = 2;
-        let mut symspell = SymSpell::new(edit_distance_max, 7, 1);
-        symspell.load_dictionary("./data/frequency_dictionary_en_82_765.txt", 0, 1, " ");
-        symspell.load_bigram_dictionary(
-            "./data/frequency_bigramdictionary_en_243_342.txt",
+        let mut symspell = SymSpell::new(edit_distance_max, None, 7, 1);
+        let _ = symspell.load_dictionary(
+            Path::new("./data/frequency_dictionary_en_82_765.txt"),
+            0,
+            1,
+            " ",
+        );
+        let _ = symspell.load_bigram_dictionary(
+            Path::new("./data/frequency_bigramdictionary_en_243_342.txt"),
             0,
             2,
             " ",
@@ -134,8 +232,13 @@ mod tests {
     #[test]
     fn test_word_segmentation() {
         let edit_distance_max = 1;
-        let mut symspell = SymSpell::new(edit_distance_max, 7, 1);
-        symspell.load_dictionary("./data/frequency_dictionary_en_82_765.txt", 0, 1, " ");
+        let mut symspell = SymSpell::new(edit_distance_max, None, 7, 1);
+        let _ = symspell.load_dictionary(
+            Path::new("./data/frequency_dictionary_en_82_765.txt"),
+            0,
+            1,
+            " ",
+        );
 
         let typo = "thequickbrownfoxjumpsoverthelazydog";
         let correction = "the quick brown fox jumps over the lazy dog";
@@ -181,8 +284,13 @@ mod tests {
     #[test]
     fn test_chinese_word_segmentation() {
         let edit_distance_max = 0;
-        let mut symspell = SymSpell::new(edit_distance_max, 7, 1);
-        symspell.load_dictionary("./data/frequency_dictionary_zh_cn_349_045.txt", 0, 1, " ");
+        let mut symspell = SymSpell::new(edit_distance_max, None, 7, 1);
+        let _ = symspell.load_dictionary(
+            Path::new("./data/frequency_dictionary_zh_cn_349_045.txt"),
+            0,
+            1,
+            " ",
+        );
 
         let typo = "部分居民生活水平";
         let correction = "部分 居民 生活 水平";
