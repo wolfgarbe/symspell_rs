@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- README.md included in doctest to ensure that code examples are always correct and up-to-date.
+- README.md included in documentation tests (doctest) to ensure that code examples are always correct and up-to-date.
 
 ## [6.8.0] - 2025-11-25
 
