@@ -94,6 +94,10 @@ println!("{:?}", result.segmented_string);
 
 */
 
+#[doc = include_str!("../README.md")]
+#[cfg(doctest)]
+pub struct ReadmeDoctests;
+
 mod symspell;
 mod test;
 pub use symspell::{Suggestion, SymSpell, Verbosity, damerau_levenshtein_osa};

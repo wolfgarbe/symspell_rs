@@ -23,7 +23,7 @@ If you like SymSpell, try [**SeekStorm**](https://github.com/SeekStorm/SeekStorm
 
 <br>
 
-```
+```text
 Copyright (c) 2025 Wolf Garbe
 Version: 6.7.3
 Author: Wolf Garbe <wolf.garbe@seekstorm.com>
@@ -176,7 +176,8 @@ __Performance:__
 
 Single word spelling correction
 ```rust
-use symspell::{SymSpell, Verbosity};
+use symspell_rs::{SymSpell, Verbosity};
+use std::path::Path;
 
 let max_edit_distance_dictionary = 2; //maximum edit distance per dictionary precalculation
 let mut symspell: SymSpell = SymSpell::new(max_edit_distance_dictionary,None, 7, 1);
@@ -197,8 +198,10 @@ println!("{:?}", suggestions);
 
 Compound aware multi-word spelling correction
 ```rust
-use symspell::{SymSpell, Verbosity};
+use symspell_rs::{SymSpell, Verbosity};
+use std::path::Path;
 
+let max_edit_distance_dictionary = 2;
 let mut symspell = SymSpell::new(max_edit_distance_dictionary,None, 7, 1);
 
 // single term dictionary
@@ -219,7 +222,8 @@ println!("{:?}", compound_suggestions);
 
 Word Segmentation of noisy text
 ```rust
-use symspell::{SymSpell, Verbosity};
+use symspell_rs::{SymSpell, Verbosity};
+use std::path::Path;
 
 let max_edit_distance_dictionary = 0; //maximum edit distance per dictionary precalculation
 let mut symspell = SymSpell::new(max_edit_distance_dictionary,None, 7, 1);
@@ -239,7 +243,8 @@ println!("{:?}", result.segmented_string);
 
 Word Segmentation of Chinese text
 ```rust
-use symspell::{SymSpell, Verbosity};
+use symspell_rs::{SymSpell, Verbosity};
+use std::path::Path;
 
 let max_edit_distance_dictionary = 0; //maximum edit distance per dictionary precalculation
 let mut symspell = SymSpell::new(max_edit_distance_dictionary,None, 7, 1);
