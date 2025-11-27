@@ -21,7 +21,7 @@ symspell.load_dictionary(Path::new("data/frequency_dictionary_en_82_765.txt"), t
 let input_term = "hous";
 let suggestion_verbosity = Verbosity::Closest;//Top, Closest, All
 let max_edit_distance_lookup = 1; //max edit distance per lookup (maxEditDistanceLookup<=maxEditDistanceDictionary)
-let suggestions = symspell.lookup(input_term, suggestion_verbosity, max_edit_distance_lookup,None,None,false);
+let suggestions = symspell.lookup(input_term, suggestion_verbosity, max_edit_distance_lookup,&None,None,false);
 //display suggestions, edit distance and term frequency
 println!("{:?}", suggestions);
 ```
@@ -45,7 +45,7 @@ symspell.load_bigram_dictionary(Path::new("data/frequency_bigramdictionary_en_24
 //lookup suggestions for multi-word input strings (supports compound splitting & merging)
 let input_sentence = "whereis th elove hehad dated forImuch of thepast who couqdn'tread in sixtgrade and ins pired him";
 let max_edit_distance_lookup = 2; //max edit distance per lookup (per single word, not per whole input string)
-let compound_suggestions = symspell.lookup_compound(input_sentence, max_edit_distance_lookup,false);
+let compound_suggestions = symspell.lookup_compound(input_sentence, max_edit_distance_lookup,&None,false);
 //display suggestions, edit distance and term frequency
 println!("{:?}", compound_suggestions);
 ```

@@ -350,7 +350,7 @@ pub struct SymSpell {
     ///   None: max_dictionary_edit_distance for all terms lengths
     ///   Some([4].into()): max_dictionary_edit_distance for all terms lengths >= 4,
     ///   Some([2,8].into()): max_dictionary_edit_distance for all terms lengths >=2, max_dictionary_edit_distance +1 for all terms for lengths>=8
-    ///   ⚠️ The resulting maximum edit distance defined in lookup() for each term length (max_edit_distance + term_length_threshold) must be 
+    ///   ⚠️ The resulting maximum edit distance defined in lookup() for each term length (max_edit_distance + term_length_threshold) must be
     ///   <= the corresponding maximum edit distance defined for each term length in SymSpell::new() used for creation of dictionary structures.
     term_length_threshold: Option<Vec<usize>>,
     /// The length of word prefixes, from which deletes are generated. (5..7).
@@ -413,7 +413,7 @@ impl SymSpell {
     ///   None: max_dictionary_edit_distance for all terms lengths
     ///   Some([4].into()): max_dictionary_edit_distance for all terms lengths >= 4,
     ///   Some([2,8].into()): max_dictionary_edit_distance for all terms lengths >=2, max_dictionary_edit_distance +1 for all terms for lengths>=8
-    ///   ⚠️ The resulting maximum edit distance defined in lookup() for each term length (max_edit_distance + term_length_threshold) must be 
+    ///   ⚠️ The resulting maximum edit distance defined in lookup() for each term length (max_edit_distance + term_length_threshold) must be
     ///   <= the corresponding maximum edit distance defined for each term length in SymSpell::new() used for creation of dictionary structures.
     /// * `prefix_length` - The length of word prefixes, from which deletes are generated. (5..7).
     /// * `count_threshold` - The minimum frequency count for dictionary words to be considered a valid for spelling correction.
@@ -591,7 +591,7 @@ impl SymSpell {
     ///   None: max_dictionary_edit_distance for all terms lengths
     ///   Some([4].into()): max_dictionary_edit_distance for all terms lengths >= 4,
     ///   Some([2,8].into()): max_dictionary_edit_distance for all terms lengths >=2, max_dictionary_edit_distance +1 for all terms for lengths>=8
-    ///   ⚠️ The resulting maximum edit distance defined in lookup() for each term length (max_edit_distance + term_length_threshold) must be 
+    ///   ⚠️ The resulting maximum edit distance defined in lookup() for each term length (max_edit_distance + term_length_threshold) must be
     ///   <= the corresponding maximum edit distance defined for each term length in SymSpell::new() used for creation of dictionary structures.
     /// * `max_results` - Optional parameter to limit the number of suggestions returned.
     /// * `preserve_case` - Whether to preserve the letter case from input to suggestion.
@@ -604,14 +604,14 @@ impl SymSpell {
     ///
     /// let mut symspell: SymSpell = SymSpell::new(2,None, 7, 1);
     /// symspell.load_dictionary(Path::new("data/frequency_dictionary_en_82_765.txt"), 0, 1, " ");
-    /// symspell.lookup("whatver", Verbosity::Top, 2,None,None,false);
+    /// symspell.lookup("whatver", Verbosity::Top, 2,&None,None,false);
     /// ```
     pub fn lookup(
         &self,
         input: &str,
         verbosity: Verbosity,
         max_edit_distance: usize,
-        term_length_threshold: Option<Vec<usize>>,
+        term_length_threshold: &Option<Vec<usize>>,
         max_results: Option<usize>,
         preserve_case: bool,
     ) -> Vec<Suggestion> {
@@ -628,18 +628,20 @@ impl SymSpell {
 
         //max_term_edit_distance dependent on term_length_threshold
         let max_term_edit_distance =
-            term_length_threshold.map_or(max_edit_distance, |term_length_threshold| {
-                let term_len = len(input);
-                let mut max_term_edit_distance = 0;
-                for (i, threshold) in term_length_threshold.iter().enumerate() {
-                    if term_len >= *threshold {
-                        max_term_edit_distance = max_edit_distance + i
-                    } else {
-                        break;
+            term_length_threshold
+                .as_ref()
+                .map_or(max_edit_distance, |term_length_threshold| {
+                    let term_len = len(input);
+                    let mut max_term_edit_distance = 0;
+                    for (i, threshold) in term_length_threshold.iter().enumerate() {
+                        if term_len >= *threshold {
+                            max_term_edit_distance = max_edit_distance + i
+                        } else {
+                            break;
+                        }
                     }
-                }
-                max_term_edit_distance
-            });
+                    max_term_edit_distance
+                });
 
         let mut suggestions: Vec<Suggestion> = Vec::new();
 
@@ -879,7 +881,7 @@ impl SymSpell {
     }
 
     /// Find suggested spellings for a multi-word input string (supports word splitting/merging).
-    /// Returns a list of Suggestionrepresenting suggested correct spellings for the input string.
+    /// Returns a list of Suggestion representing suggested correct spellings for the input string.
     ///
     /// lookup_compound supports compound aware automatic spelling correction of multi-word input strings with three cases:
     /// 1. mistakenly inserted space into a correct word led to two incorrect terms
@@ -900,12 +902,13 @@ impl SymSpell {
     ///
     /// let mut symspell: SymSpell = SymSpell::new(2, None,7, 1);
     /// symspell.load_dictionary(Path::new("data/frequency_dictionary_en_82_765.txt"), 0, 1, " ");
-    /// symspell.lookup_compound("whereis th elove", 2, false);
+    /// symspell.lookup_compound("whereis th elove", 2, &None,false);
     /// ```
     pub fn lookup_compound(
         &self,
         input: &str,
         edit_distance_max: usize,
+        term_length_threshold: &Option<Vec<usize>>,
         preserve_case: bool,
     ) -> Vec<Suggestion> {
         //parse input string into single terms
@@ -917,7 +920,14 @@ impl SymSpell {
         //translate every term to its best suggestion, otherwise it remains unchanged
         let mut last_combi = false;
         for (i, term) in term_list1.iter().enumerate() {
-            suggestions = self.lookup(term, Verbosity::Top, edit_distance_max, None, None, false);
+            suggestions = self.lookup(
+                term,
+                Verbosity::Top,
+                edit_distance_max,
+                term_length_threshold,
+                None,
+                false,
+            );
 
             //combi check, always before split
             if i > 0 && !last_combi {
@@ -925,7 +935,7 @@ impl SymSpell {
                     &[term_list1[i - 1].as_str(), term_list1[i].as_str()].join(""),
                     Verbosity::Top,
                     edit_distance_max,
-                    None,
+                    term_length_threshold,
                     None,
                     false,
                 );
@@ -992,7 +1002,7 @@ impl SymSpell {
                             &part1,
                             Verbosity::Top,
                             edit_distance_max,
-                            None,
+                            term_length_threshold,
                             None,
                             false,
                         );
@@ -1001,7 +1011,7 @@ impl SymSpell {
                                 &part2,
                                 Verbosity::Top,
                                 edit_distance_max,
-                                None,
+                                term_length_threshold,
                                 None,
                                 false,
                             );
@@ -1226,7 +1236,7 @@ impl SymSpell {
                 // word_segmentation works on text with any case which is retained in the output segmentation.
                 // word_segmentation works on noisy text with spelling mistakes, which are corrected in the output segmentation.
                 let results =
-                    self.lookup(&part, Verbosity::Top, max_edit_distance, None, None, true);
+                    self.lookup(&part, Verbosity::Top, max_edit_distance, &None, None, true);
                 let top_prob_log = if !results.is_empty() {
                     //retain/preserve/transfer letter case during correction
                     if results[0].distance > 0 {
