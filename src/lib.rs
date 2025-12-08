@@ -100,4 +100,4 @@ pub struct ReadmeDoctests;
 
 mod symspell;
 mod test;
-pub use symspell::{Suggestion, SymSpell, Verbosity, damerau_levenshtein_osa};
+pub use symspell::{Composition, Suggestion, SymSpell, Verbosity, damerau_levenshtein_osa};

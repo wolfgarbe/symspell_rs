@@ -256,17 +256,18 @@ fn at(s: &str, i: isize) -> Option<char> {
 }
 
 #[derive(Debug, Clone)]
+/// Result of word segmentation.
 pub struct Composition {
-    // the word segmented and spelling corrected string,
+    /// the word segmented and spelling corrected string,
     pub segmented_string: String,
-    // the Edit distance sum between input string and corrected string,
+    /// the Edit distance sum between input string and corrected string,
     pub distance_sum: usize,
-    // the Sum of word occurence probabilities in log scale (a measure of how common and probable the corrected segmentation is).
+    /// the Sum of word occurence probabilities in log scale (a measure of how common and probable the corrected segmentation is).
     pub prob_log_sum: f64,
 }
 
 impl Composition {
-    pub fn empty() -> Self {
+    fn empty() -> Self {
         Self {
             segmented_string: "".to_string(),
             distance_sum: 0,
@@ -1199,7 +1200,7 @@ impl SymSpell {
     /// ```
     pub fn word_segmentation(&self, input: &str, max_edit_distance: usize) -> Composition {
         // Normalize ligatures: "scientiﬁc" "ﬁelds" "ﬁnal"
-        let input = &unicode_normalization_form_kc(input).replace('\u{002D}', ""); // Remove U+002D (hyphen-minus);
+        let input = &unicode_normalization_form_kc(input);
 
         let asize = len(input);
 
@@ -1313,7 +1314,16 @@ impl SymSpell {
             }
             ci = if ci == asize { 0 } else { ci };
         }
-        compositions[ci].to_owned()
+
+        if compositions.is_empty() {
+            Composition {
+                segmented_string: input.to_string(),
+                distance_sum: 0,
+                prob_log_sum: 0.0,
+            }
+        } else {
+            compositions[ci].to_owned()
+        }
     }
 
     // Check whether all delete chars are present in the suggestion prefix in correct order, otherwise this is just a hash collision

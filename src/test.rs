@@ -279,6 +279,18 @@ mod tests {
         let correction = "I drank the glasses\' contents, which tasted of elderberries";
         let result = symspell.word_segmentation(typo, 0);
         assert_eq!(correction, result.segmented_string);
+
+        //empty input string
+        let typo = "";
+        let correction = "";
+        let result = symspell.word_segmentation(typo, 0);
+        assert_eq!(correction, result.segmented_string);
+
+        //ligatures
+        let typo = "scientiﬁcﬁeldsﬁnal";
+        let correction = "scientific fields final";
+        let result = symspell.word_segmentation(typo, 0);
+        assert_eq!(correction, result.segmented_string);
     }
 
     #[test]
