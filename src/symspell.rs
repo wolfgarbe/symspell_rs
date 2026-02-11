@@ -1371,11 +1371,9 @@ impl SymSpell {
     where
         T: Clone + AsRef<str> + Into<String>,
     {
+        let term = term.as_ref().to_lowercase();
         // update words
-        let entry = self
-            .words
-            .entry(term.clone().into().into_boxed_str())
-            .or_insert(0);
+        let entry = self.words.entry(term.clone().into_boxed_str()).or_insert(0);
         if *entry == 0 {
             *entry = count;
             if count < self.count_threshold {
@@ -1438,8 +1436,8 @@ impl SymSpell {
 
             self.deletes
                 .entry(delete_hash)
-                .and_modify(|e| e.push(term.clone().into().into_boxed_str()))
-                .or_insert_with(|| vec![term.clone().into().into_boxed_str()]);
+                .and_modify(|e| e.push(term.clone().into_boxed_str()))
+                .or_insert_with(|| vec![term.clone().into_boxed_str()]);
         }
 
         true

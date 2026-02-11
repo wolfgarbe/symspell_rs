@@ -21,7 +21,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 serde = { version = "1.0.228", features = ["derive"], optional = true }
 ahash ={ version = "0.8.12", features = ["serde"]}
-regex = "1.12.2"
+regex = "1.12.3"
 strsim = "0.11.1"
 smallvec = "1.15.1"
 unicode-normalization = "0.1.25"
