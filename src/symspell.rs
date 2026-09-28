@@ -35,31 +35,117 @@ use std::cmp::Ordering;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
+#[cfg(not(any(
+    all(
+        feature = "gxhash",
+        target_arch = "x86_64",
+        target_feature = "aes",
+        target_feature = "sse2"
+    ),
+    all(
+        feature = "gxhash",
+        target_arch = "aarch64",
+        target_feature = "aes",
+        target_feature = "neon"
+    )
+)))]
+use std::sync::LazyLock;
 use unicode_normalization::UnicodeNormalization;
 
-#[cfg(not(all(target_feature = "aes", target_feature = "sse2")))]
-use ahash::RandomState;
-#[cfg(not(all(target_feature = "aes", target_feature = "sse2")))]
-use std::sync::LazyLock;
+//####
 
-#[cfg(not(all(target_feature = "aes", target_feature = "sse2")))]
+// 1. If compiling for x86_64 AND the user explicitly targeted AES/SSE2/NEON and the feature is explicitly requested, use gxhash
+#[cfg(any(
+    all(
+        feature = "gxhash",
+        target_arch = "x86_64",
+        target_feature = "aes",
+        target_feature = "sse2"
+    ),
+    all(
+        feature = "gxhash",
+        target_arch = "aarch64",
+        target_feature = "aes",
+        target_feature = "neon"
+    )
+))]
+use gxhash::gxhash32;
+
+// 3. FALLBACK: On any other platform, or if the compiler lacks native hardware instructions
+#[cfg(not(any(
+    all(
+        feature = "gxhash",
+        target_arch = "x86_64",
+        target_feature = "aes",
+        target_feature = "sse2"
+    ),
+    all(
+        feature = "gxhash",
+        target_arch = "aarch64",
+        target_feature = "aes",
+        target_feature = "neon"
+    )
+)))]
+use ahash::RandomState;
+
+// 3. FALLBACK: On any other platform, or if the compiler lacks native hardware instructions
+#[cfg(not(any(
+    all(
+        feature = "gxhash",
+        target_arch = "x86_64",
+        target_feature = "aes",
+        target_feature = "sse2"
+    ),
+    all(
+        feature = "gxhash",
+        target_arch = "aarch64",
+        target_feature = "aes",
+        target_feature = "neon"
+    )
+)))]
 pub static HASHER_32: LazyLock<RandomState> =
     LazyLock::new(|| RandomState::with_seeds(805272099, 242851902, 646123436, 591410655));
 
 // stable hash, faster, but not available on all platforms
 // https://github.com/tkaitchuck/aHash
 #[inline]
-#[cfg(all(target_feature = "aes", target_feature = "sse2"))]
+// If compiling for x86_64 AND the user explicitly targeted AES/SSE2/NEON, use gxhash
+#[cfg(any(
+    all(
+        feature = "gxhash",
+        target_arch = "x86_64",
+        target_feature = "aes",
+        target_feature = "sse2"
+    ),
+    all(
+        feature = "gxhash",
+        target_arch = "aarch64",
+        target_feature = "aes",
+        target_feature = "neon"
+    )
+))]
 pub(crate) fn hash32(term_bytes: &[u8]) -> u32 {
-    use gxhash::gxhash32;
-
     gxhash32(term_bytes, 1234)
 }
 
-// unstable hash, slower, but available on all platforms
+// unstable, slower, but available on all platforms
 // https://github.com/ogxd/gxhash
 #[inline]
-#[cfg(not(all(target_feature = "aes", target_feature = "sse2")))]
+// 3. FALLBACK: On any other platform, or if the compiler lacks native hardware instructions
+#[cfg(not(any(
+    all(
+        feature = "gxhash",
+        target_arch = "x86_64",
+        target_feature = "aes",
+        target_feature = "sse2"
+    ),
+    all(
+        feature = "gxhash",
+        target_arch = "aarch64",
+        target_feature = "aes",
+        target_feature = "neon"
+    )
+)))]
 pub(crate) fn hash32(term_bytes: &[u8]) -> u32 {
     HASHER_32.hash_one(term_bytes) as u32
 }

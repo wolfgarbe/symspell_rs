@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.8.4] - 2026-09-28
+
+### Changed
+
+- Explicit activation of new `gxhash`-feature for high-performance hashing via `gxhash`, both for `x86_64` and `aarch64`. Enable the `gxhash`-feature:
+  1. If compiling for x86_64 AND explicitly targeted AES/SSE2: `#[cfg(all(target_arch = "x86_64", target_feature = "aes", target_feature = "sse2"))]` or
+  2. If compiling for ARM64 AND explicitly targeted AES/NEON`#[cfg(all(target_arch = "aarch64", target_feature = "aes", target_feature= "neon"))]`
+  3. Otherwise fallback to `ahash`.
+
 ## [6.8.3] - 2025-12-05
 
 ### Fixed

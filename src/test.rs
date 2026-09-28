@@ -227,6 +227,14 @@ mod tests {
         assert_eq!(correction, results[0].term);
         assert_eq!(9, results[0].distance);
         assert_eq!(0, results[0].count);
+
+        let typo = "it urgent";
+        let correction = "it urgent";
+        let results = symspell.lookup_compound(typo, 1, &None, true);
+        assert_eq!(1, results.len());
+        assert_eq!(correction, results[0].term);
+        assert_eq!(0, results[0].distance);
+        assert_eq!(18319, results[0].count);
     }
 
     #[test]
