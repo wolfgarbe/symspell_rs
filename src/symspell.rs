@@ -164,7 +164,7 @@ pub type FastVec<T> = SmallVec<[T; VEC_SIZE]>;
 /// Returns the edit distance, >= 0 representing the number of edits required to transform one string to the other,
 /// or -1 if the distance is greater than the specified max_distance.
 /// https://en.wikipedia.org/wiki/Damerau%E2%80%93Levenshtein_distance#Optimal_string_alignment_distance
-pub fn damerau_levenshtein_osa(a: &str, b: &str, max_distance: usize) -> Option<usize> {
+pub fn damerau_levenshtein_osa_fallback(a: &str, b: &str, max_distance: usize) -> Option<usize> {
     let b_len = b.chars().count();
 
     //the edit distance can't be less than the difference of the lengths of the strings.
@@ -206,6 +206,216 @@ pub fn damerau_levenshtein_osa(a: &str, b: &str, max_distance: usize) -> Option<
     } else {
         None
     }
+}
+
+const MAX_PATTERN: usize = 64;
+
+#[inline]
+fn damerau_levenshtein_osa_bitparallel_u8(a: &[u8], b: &[u8], k: usize) -> Option<usize> {
+    // preconditions: 1 <= a.len() <= 64, b.len() >= 1, after prefix/suffix strip
+    let m = a.len();
+    let mut pm = [0u64; 256]; // reuse a scratch buffer if you call this in a hot loop
+    for (i, &c) in a.iter().enumerate() {
+        pm[c as usize] |= 1u64 << i;
+    }
+
+    let mut vp = !0u64;
+    let mut vn = 0u64;
+    let mut d0 = 0u64;
+    let mut pm_old = 0u64;
+    let mask = 1u64 << (m - 1);
+    let mut dist = m;
+    let n = b.len();
+
+    for (j, &c) in b.iter().enumerate() {
+        let pm_j = pm[c as usize];
+        let tr = ((!d0 & pm_j) << 1) & pm_old;
+        d0 = ((pm_j & vp).wrapping_add(vp) ^ vp) | pm_j | vn | tr;
+
+        let mut hp = vn | !(d0 | vp);
+        let mut hn = d0 & vp;
+
+        dist += (hp & mask != 0) as usize;
+        dist -= (hn & mask != 0) as usize;
+
+        // the score can drop by at most 1 per remaining column
+        if dist > k.saturating_add(n - 1 - j) {
+            return None;
+        }
+
+        hp = (hp << 1) | 1;
+        hn <<= 1;
+        vp = hn | !(d0 | hp);
+        vn = hp & d0;
+        pm_old = pm_j;
+    }
+    (dist <= k).then_some(dist)
+}
+
+/// Bit-parallel OSA (Hyyrö 2003). `pat`: 1..=64 chars, `text`: `n` >= 1 chars.
+#[inline]
+fn osa_bitparallel_chars<I: Iterator<Item = char>>(
+    pat: &[char],
+    text: I,
+    n: usize,
+    k: usize,
+) -> Option<usize> {
+    let m = pat.len();
+    debug_assert!((1..=MAX_PATTERN).contains(&m));
+
+    // Match masks: direct table for ASCII, small list for everything else.
+    let mut pm_ascii = [0u64; 128];
+    let mut pm_other: [(char, u64); MAX_PATTERN] = [('\0', 0); MAX_PATTERN];
+    let mut other_len = 0usize;
+    for (i, &c) in pat.iter().enumerate() {
+        let bit = 1u64 << i;
+        if (c as u32) < 128 {
+            pm_ascii[c as usize] |= bit;
+        } else {
+            match pm_other[..other_len].iter_mut().find(|e| e.0 == c) {
+                Some(e) => e.1 |= bit,
+                None => {
+                    pm_other[other_len] = (c, bit);
+                    other_len += 1;
+                }
+            }
+        }
+    }
+
+    let mut vp = !0u64;
+    let mut vn = 0u64;
+    let mut d0 = 0u64;
+    let mut pm_old = 0u64;
+    let last = 1u64 << (m - 1);
+    let mut dist = m;
+
+    for (j, c) in text.enumerate() {
+        let pm_j = if (c as u32) < 128 {
+            pm_ascii[c as usize]
+        } else {
+            pm_other[..other_len]
+                .iter()
+                .find(|e| e.0 == c)
+                .map_or(0, |e| e.1)
+        };
+
+        // transposition term uses the *previous* d0 and previous column's mask
+        let tr = ((!d0 & pm_j) << 1) & pm_old;
+        d0 = (((pm_j & vp).wrapping_add(vp)) ^ vp) | pm_j | vn | tr;
+
+        let mut hp = vn | !(d0 | vp);
+        let mut hn = d0 & vp;
+
+        dist += ((hp & last) != 0) as usize;
+        dist -= ((hn & last) != 0) as usize;
+
+        // D[m][j] can decrease by at most 1 per remaining column
+        if dist > k + (n - 1 - j) {
+            return None;
+        }
+
+        hp = (hp << 1) | 1;
+        hn <<= 1;
+        vp = hn | !(d0 | hp);
+        vn = hp & d0;
+        pm_old = pm_j;
+    }
+    (dist <= k).then_some(dist)
+}
+
+pub fn damerau_levenshtein_osa_bitparallel_chars(s1: &str, s2: &str, k: usize) -> Option<usize> {
+    if s1 == s2 {
+        return Some(0);
+    }
+    if k == 0 {
+        return None;
+    }
+
+    // strip common prefix (on char boundaries)
+    let (b1, b2) = (s1.as_bytes(), s2.as_bytes());
+    let mut p = b1.iter().zip(b2).take_while(|(x, y)| x == y).count();
+    while !s1.is_char_boundary(p) {
+        p -= 1;
+    }
+    let (s1, s2) = (&s1[p..], &s2[p..]);
+
+    // strip common suffix (on char boundaries)
+    let (b1, b2) = (s1.as_bytes(), s2.as_bytes());
+    let mut q = b1
+        .iter()
+        .rev()
+        .zip(b2.iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    while q > 0 && !(s1.is_char_boundary(s1.len() - q) && s2.is_char_boundary(s2.len() - q)) {
+        q -= 1;
+    }
+    let (s1, s2) = (&s1[..s1.len() - q], &s2[..s2.len() - q]);
+
+    let (l1, l2) = (s1.chars().count(), s2.chars().count());
+    if l1.abs_diff(l2) > k {
+        return None;
+    }
+    if l1 == 0 {
+        return Some(l2);
+    }
+    if l2 == 0 {
+        return Some(l1);
+    }
+
+    // shorter string = bit-vector pattern (OSA is symmetric)
+    let (pat_s, text_s, n) = if l1 <= l2 { (s1, s2, l2) } else { (s2, s1, l1) };
+    let m = min(l1, l2);
+    if m > MAX_PATTERN {
+        return damerau_levenshtein_osa_fallback(s1, s2, k); // your existing implementation
+    }
+
+    let mut pat = ['\0'; MAX_PATTERN];
+    for (slot, c) in pat.iter_mut().zip(pat_s.chars()) {
+        *slot = c;
+    }
+
+    osa_bitparallel_chars(&pat[..m], text_s.chars(), n, k)
+}
+
+//wrapper
+
+/// Calculates the real OSA Damerau-Levenshtein distance with UTF-8 support.
+pub fn damerau_levenshtein_osa(s1: &str, s2: &str, k: usize) -> Option<usize> {
+    if s1.is_ascii() && s2.is_ascii() {
+        let (mut a, mut b) = (s1.as_bytes(), s2.as_bytes());
+        if a.len().abs_diff(b.len()) > k {
+            return None;
+        }
+
+        // strip common prefix / suffix (valid for OSA)
+        let p = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+        a = &a[p..];
+        b = &b[p..];
+        let s = a
+            .iter()
+            .rev()
+            .zip(b.iter().rev())
+            .take_while(|(x, y)| x == y)
+            .count();
+        a = &a[..a.len() - s];
+        b = &b[..b.len() - s];
+
+        if a.is_empty() {
+            return (b.len() <= k).then_some(b.len());
+        }
+        if b.is_empty() {
+            return (a.len() <= k).then_some(a.len());
+        }
+
+        // the pattern must be the one that fits in 64 bits
+        let (a, b) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+        if a.len() <= 64 {
+            return damerau_levenshtein_osa_bitparallel_u8(a, b, k);
+        }
+    }
+    // non-ASCII or >64: your existing char-based path (see below)
+    damerau_levenshtein_osa_bitparallel_chars(s1, s2, k)
 }
 
 /// Normalize ligatures: "scientiﬁc" "ﬁelds" "ﬁnal"
