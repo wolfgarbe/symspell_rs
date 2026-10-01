@@ -1,6 +1,6 @@
 [package]
 name = "symspell_rs"
-version = "6.9.0"
+version = "6.9.1"
 authors = ["Wolf Garbe <Wolf Garbe wolf.garbe@seekstorm.com>"]
 license = "MIT"
 categories = ["database-implementations", "data-structures"]
@@ -26,8 +26,6 @@ serde = { version = "1.0.229", features = ["derive"], optional = true }
 ahash ={ version = "0.8.12", features = ["serde"]}
 gxhash = { version = "3.5.0", features = ["deterministic"], optional = true }
 
-regex = "1.12.3"
-strsim = "0.11.1"
 smallvec = "1.16.2"
 unicode-normalization = "0.1.25"
 itertools = "0.15.0"

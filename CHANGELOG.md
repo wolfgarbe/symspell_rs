@@ -5,11 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.9.1] - 2026-10-01
+
+### Improved
+
+- Optimized `damerau_levenshtein_osa_fallback` by using the **multi-word block version** of the **bit-parallel algorithm (Hyyrö 2003)**, to cover any length., making it **5x faster** than `strsim.osa_distance` for terms > 64 chars.
+
 ## [6.9.0] - 2026-09-29
 
 ### Improved
 
-- 4x faster damerau_levenshtein_osa by implementing bit-parallel OSA (Hyyrö 2003), resulting in a 20% faster symspell lookup.
+- Optimized `damerau_levenshtein_osa` by using **bit-parallel OSA (Hyyrö 2003)**, making it **8x faster** than `strsim.osa_distance` and boosting SymSpell lookup speeds by 20%.
+- Exposed `damerau_levenshtein_osa` as a public method for standalone use.
 
 ## [6.8.4] - 2026-09-28
 

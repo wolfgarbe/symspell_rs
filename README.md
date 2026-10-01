@@ -264,6 +264,16 @@ println!("{:?}", result.segmented_string);
 
 ---
 
+Calculates the real OSA Damerau-Levenshtein distance with UTF-8 support, by standalone use of damerau_levenshtein_osa
+```rust
+use symspell_rs::damerau_levenshtein_osa;
+
+let maximum_edit_distance=2;
+let result=damerau_levenshtein_osa("hous", "house", maximum_edit_distance);
+```
+
+---
+
 #### Frequency dictionary
 Dictionary quality is paramount for correction quality. In order to achieve this two data sources were combined by intersection: Google Books Ngram data which provides representative word frequencies (but contains many entries with spelling errors) and SCOWL — Spell Checker Oriented Word Lists which ensures genuine English vocabulary (but contained no word frequencies required for ranking of suggestions within the same edit distance).
 

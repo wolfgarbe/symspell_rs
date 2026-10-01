@@ -11,15 +11,15 @@
 // 2. mistakenly omitted space between two correct words led to one incorrect combined term
 // 3. multiple independent input terms with/without spelling errors
 
-// Copyright (C) 2025 Wolf Garbe
-// Version: 6.7.3
+// Copyright (C) 2026 Wolf Garbe
+// Version: 6.9.1
 // Author: Wolf Garbe wolf.garbe@seekstorm.com
 // Maintainer: Wolf Garbe wolf.garbe@seekstorm.com
 // URL: https://github.com/wolfgarbe/symspell
 // Description: https://seekstorm.com/blog/1000x-spelling-correction/
 //
 // MIT License
-// Copyright (c) 2025 Wolf Garbe
+// Copyright (c) 2026 Wolf Garbe
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 // documentation files (the "Software"), to deal in the Software without restriction, including without limitation
 // the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
@@ -30,11 +30,12 @@
 
 use ahash::{AHashMap, AHashSet};
 use itertools::Itertools;
-use std::cmp;
-use std::cmp::Ordering;
+use smallvec::{SmallVec, smallvec};
+use std::cmp::{self, Ordering, min};
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
+
 #[cfg(not(any(
     all(
         feature = "gxhash",
@@ -150,63 +151,416 @@ pub(crate) fn hash32(term_bytes: &[u8]) -> u32 {
     HASHER_32.hash_one(term_bytes) as u32
 }
 
-use std::{cmp::min, mem};
+//###
 
-use smallvec::SmallVec;
-use smallvec::smallvec;
+const WORD_BITS: usize = 64;
+type CharVec = SmallVec<[char; 64]>;
 
-const VEC_SIZE: usize = 16; //32
-pub type FastVec<T> = SmallVec<[T; VEC_SIZE]>;
+/// Per-word state of the Hyyrö OSA recurrence (one 64-row block of the pattern).
+#[derive(Clone, Copy)]
+struct Row {
+    vp: u64,
+    vn: u64,
+    d0: u64,
+    pm: u64, // match mask of the previous column, needed for the transposition term
+}
+impl Row {
+    const INIT: Row = Row {
+        vp: !0,
+        vn: 0,
+        d0: 0,
+        pm: 0,
+    };
+}
 
-/// Damerau-Levenshtein edit distance, like Levenshtein but allows for adjacent transpositions.
-/// Optimal string alignment version (OSA): each substring can only be edited once.
-/// E.g., "CA" to "ABC" has an edit distance of 2 by for Damerau-Levenshtein, but a distance of 3 when using the optimal string alignment algorithm.
-/// Returns the edit distance, >= 0 representing the number of edits required to transform one string to the other,
-/// or -1 if the distance is greater than the specified max_distance.
-/// https://en.wikipedia.org/wiki/Damerau%E2%80%93Levenshtein_distance#Optimal_string_alignment_distance
-pub fn damerau_levenshtein_osa_fallback(a: &str, b: &str, max_distance: usize) -> Option<usize> {
-    let b_len = b.chars().count();
+/// Match masks of the pattern: for every symbol, `words` consecutive u64s (bit i of word w = pattern[w*64+i]).
+trait PatternMasks<T> {
+    fn get(&self, c: T) -> &[u64];
+}
 
-    //the edit distance can't be less than the difference of the lengths of the strings.
-    //if a.chars().count().abs_diff(b_len)> max_distance {return -1;}
-
-    // 0..=b_len behaves like 0..b_len.saturating_add(1) which could be a different size
-    // this leads to significantly worse code gen when swapping the vectors below
-    let mut prev_two_distances: FastVec<usize> = (0..b_len + 1).collect();
-    let mut prev_distances: FastVec<usize> = (0..b_len + 1).collect();
-    let mut curr_distances: FastVec<usize> = smallvec![0; b_len + 1];
-
-    let mut prev_a_char = char::MAX;
-    let mut prev_b_char = char::MAX;
-
-    for (i, a_char) in a.chars().enumerate() {
-        curr_distances[0] = i + 1;
-
-        for (j, b_char) in b.chars().enumerate() {
-            let cost = usize::from(a_char != b_char);
-            curr_distances[j + 1] = min(
-                curr_distances[j] + 1,
-                min(prev_distances[j + 1] + 1, prev_distances[j] + cost),
-            );
-            if i > 0 && j > 0 && a_char != b_char && a_char == prev_b_char && b_char == prev_a_char
-            {
-                curr_distances[j + 1] = min(curr_distances[j + 1], prev_two_distances[j - 1] + 1);
-            }
-
-            prev_b_char = b_char;
+/// ASCII: direct table, layout [symbol][word] so one column's masks are contiguous.
+struct AsciiMasks {
+    words: usize,
+    table: SmallVec<[u64; 128]>, // inline (no heap) for patterns <= 64 chars
+}
+impl AsciiMasks {
+    fn new(pat: &[u8]) -> Self {
+        let words = pat.len().div_ceil(WORD_BITS);
+        let mut table: SmallVec<[u64; 128]> = smallvec![0; 128 * words];
+        for (i, &c) in pat.iter().enumerate() {
+            table[(c & 0x7f) as usize * words + i / WORD_BITS] |= 1u64 << (i % WORD_BITS);
         }
-
-        mem::swap(&mut prev_two_distances, &mut prev_distances);
-        mem::swap(&mut prev_distances, &mut curr_distances);
-        prev_a_char = a_char;
-    }
-
-    if prev_distances[b_len] <= max_distance {
-        Some(prev_distances[b_len])
-    } else {
-        None
+        Self { words, table }
     }
 }
+impl PatternMasks<u8> for AsciiMasks {
+    #[inline(always)]
+    fn get(&self, c: u8) -> &[u64] {
+        let i = (c & 0x7f) as usize * self.words;
+        &self.table[i..i + self.words]
+    }
+}
+
+/// Unicode: sorted distinct pattern chars + binary search. The last table row is all zeros
+/// and serves symbols that don't occur in the pattern.
+struct UnicodeMasks {
+    words: usize,
+    syms: CharVec,
+    table: SmallVec<[u64; 64]>,
+}
+impl UnicodeMasks {
+    fn new(pat: &[char]) -> Self {
+        let words = pat.len().div_ceil(WORD_BITS);
+        let mut syms: CharVec = pat.iter().copied().collect();
+        syms.sort_unstable();
+        syms.dedup();
+        let mut table: SmallVec<[u64; 64]> = smallvec![0; (syms.len() + 1) * words];
+        for (i, &c) in pat.iter().enumerate() {
+            let idx = syms.binary_search(&c).unwrap();
+            table[idx * words + i / WORD_BITS] |= 1u64 << (i % WORD_BITS);
+        }
+        Self { words, syms, table }
+    }
+}
+impl PatternMasks<char> for UnicodeMasks {
+    #[inline(always)]
+    fn get(&self, c: char) -> &[u64] {
+        let idx = self.syms.binary_search(&c).unwrap_or(self.syms.len());
+        &self.table[idx * self.words..(idx + 1) * self.words]
+    }
+}
+
+/// Multi-word bit-parallel OSA (Hyyrö 2003, block-wise).
+/// Preconditions: 1 <= m (= pattern length), text non-empty, masks built from the pattern.
+#[inline]
+fn osa_blocks<T: Copy, M: PatternMasks<T>>(
+    masks: &M,
+    m: usize,
+    text: &[T],
+    k: usize,
+) -> Option<usize> {
+    let words = m.div_ceil(WORD_BITS);
+    let last_word = words - 1;
+    let last_bit = 1u64 << ((m - 1) % WORD_BITS);
+    let n = text.len();
+
+    let mut rows: SmallVec<[Row; 4]> = smallvec![Row::INIT; words]; // stack up to 256 chars
+    let mut dist = m; // D[m][0]
+
+    for (j, &c) in text.iter().enumerate() {
+        let pms = masks.get(c);
+
+        // horizontal deltas entering word 0 from the top row D[0][j] = j: always +1
+        let mut hp_carry = 1u64;
+        let mut hn_carry = 0u64;
+        // previous word's old D0 (column j-1) and current mask (column j), for the
+        // transposition bit that crosses the word boundary
+        let mut prev_d0_old = 0u64;
+        let mut prev_pm_cur = 0u64;
+
+        for (w, (row, &pm_j)) in rows.iter_mut().zip(pms).enumerate() {
+            let Row {
+                vp,
+                vn,
+                d0: d0_old,
+                pm: pm_old,
+            } = *row;
+
+            // transposition term: previous column's mask AND (current mask & !previous D0), shifted
+            let tr = ((((!d0_old) & pm_j) << 1) | (((!prev_d0_old) & prev_pm_cur) >> 63)) & pm_old;
+
+            let x = pm_j | hn_carry;
+            let d0 = (((x & vp).wrapping_add(vp)) ^ vp) | x | vn | tr;
+
+            let mut hp = vn | !(d0 | vp);
+            let mut hn = d0 & vp;
+
+            if w == last_word {
+                dist += ((hp & last_bit) != 0) as usize;
+                dist -= ((hn & last_bit) != 0) as usize;
+            }
+
+            let hp_out = hp >> 63;
+            let hn_out = hn >> 63;
+            hp = (hp << 1) | hp_carry;
+            hn = (hn << 1) | hn_carry;
+            hp_carry = hp_out;
+            hn_carry = hn_out;
+
+            *row = Row {
+                vp: hn | !(d0 | hp),
+                vn: hp & d0,
+                d0,
+                pm: pm_j,
+            };
+            prev_d0_old = d0_old;
+            prev_pm_cur = pm_j;
+        }
+
+        // Early exit: D[m][j] drops by at most 1 per remaining column.
+        if dist > k.saturating_add(n - 1 - j) {
+            return None;
+        }
+    }
+    (dist <= k).then_some(dist)
+}
+
+/// Shared front end for u8 and char slices: length check, prefix/suffix strip,
+/// ordering (shorter = pattern), then the block kernel.
+#[inline]
+fn osa_slices<T: Copy + Eq, M: PatternMasks<T>>(
+    mut a: &[T],
+    mut b: &[T],
+    k: usize,
+    build: impl FnOnce(&[T]) -> M,
+) -> Option<usize> {
+    // the distance can't be smaller than the length difference
+    if a.len().abs_diff(b.len()) > k {
+        return None;
+    }
+
+    // common prefix, then common suffix (both valid for OSA)
+    let p = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    a = &a[p..];
+    b = &b[p..];
+    let s = a
+        .iter()
+        .rev()
+        .zip(b.iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    a = &a[..a.len() - s];
+    b = &b[..b.len() - s];
+
+    if a.is_empty() {
+        return (b.len() <= k).then_some(b.len());
+    }
+    if b.is_empty() {
+        return (a.len() <= k).then_some(a.len());
+    }
+
+    // "sorting": the shorter term becomes the bit-vector pattern (OSA is symmetric),
+    // so the number of words is ceil(min_len / 64) and the loop runs over the longer one
+    let (pat, text) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    let masks = build(pat);
+    osa_blocks(&masks, pat.len(), text, k)
+}
+
+//the edit distance can't be less than the difference of the lengths of the strings.
+//if a.chars().count().abs_diff(b_len)> max_distance {return -1;}
+//shorter string first for potential optimizations
+//remove common prefix and suffix to potentially reduce the problem size
+
+/// Damerau-Levenshtein edit distance, optimal string alignment (OSA) variant, like Levenshtein but allows for adjacent transpositions, any length, UTF-8 aware.
+/// Implements the multi-word block version of the bit-parallel algorithm (Hyyrö 2003), to cover any length.
+/// Optimal string alignment version (OSA): each substring can only be edited once.
+/// E.g., "CA" to "ABC" has an edit distance of 2 by for Damerau-Levenshtein, but a distance of 3 when using the optimal string alignment algorithm.
+/// Returns Some(distance) if distance <= k, else None. Distance representing the number of edits required to transform one string to the other,
+/// https://en.wikipedia.org/wiki/Damerau%E2%80%93Levenshtein_distance#Optimal_string_alignment_distance
+#[inline]
+pub fn damerau_levenshtein_osa_fallback(s1: &str, s2: &str, k: usize) -> Option<usize> {
+    if s1 == s2 {
+        return Some(0);
+    }
+    if k == 0 {
+        return None;
+    }
+    if s1.is_ascii() && s2.is_ascii() {
+        osa_slices(s1.as_bytes(), s2.as_bytes(), k, AsciiMasks::new)
+    } else {
+        // decode each string once; everything afterwards works on slices,
+        // so no char-boundary logic is needed
+        let a: CharVec = s1.chars().collect();
+        let b: CharVec = s2.chars().collect();
+        osa_slices(&a, &b, k, UnicodeMasks::new)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Reference: full O(n*m) OSA table, no pruning.
+    fn osa_ref(a: &[char], b: &[char]) -> usize {
+        let (n, m) = (a.len(), b.len());
+        let mut d = vec![vec![0usize; m + 1]; n + 1];
+        for i in 0..=n {
+            d[i][0] = i;
+        }
+        for j in 0..=m {
+            d[0][j] = j;
+        }
+        for i in 1..=n {
+            for j in 1..=m {
+                let cost = (a[i - 1] != b[j - 1]) as usize;
+                d[i][j] = (d[i - 1][j] + 1)
+                    .min(d[i][j - 1] + 1)
+                    .min(d[i - 1][j - 1] + cost);
+                if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                    d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+                }
+            }
+        }
+        d[n][m]
+    }
+
+    fn xorshift(s: &mut u64) -> u64 {
+        *s ^= *s << 13;
+        *s ^= *s >> 7;
+        *s ^= *s << 17;
+        *s
+    }
+
+    fn random_string(s: &mut u64, len: usize, alphabet: &[char]) -> String {
+        (0..len)
+            .map(|_| alphabet[(xorshift(s) % alphabet.len() as u64) as usize])
+            .collect()
+    }
+
+    #[test]
+    fn doc_example() {
+        assert_eq!(damerau_levenshtein_osa("CA", "ABC", 5), Some(3));
+        assert_eq!(damerau_levenshtein_osa("ab", "ba", 1), Some(1));
+    }
+
+    #[test]
+    fn fuzz_against_reference() {
+        let alphabets: [&[char]; 3] = [
+            &['a', 'b'],
+            &['a', 'b', 'c', 'd'],
+            &['a', 'b', 'é', '日', '😀'],
+        ];
+        let lens = [
+            0usize, 1, 2, 3, 5, 31, 32, 63, 64, 65, 127, 128, 129, 191, 192, 193, 250,
+        ];
+        let mut seed = 0x9E3779B97F4A7C15u64;
+        for alphabet in alphabets {
+            for &l1 in &lens {
+                for &l2 in &lens {
+                    for _ in 0..6 {
+                        let a = random_string(&mut seed, l1, alphabet);
+                        // half the time derive b from a with a few random edits so distances stay small
+                        let b = if xorshift(&mut seed) % 2 == 0 {
+                            random_string(&mut seed, l2, alphabet)
+                        } else {
+                            let mut v: Vec<char> = a.chars().collect();
+                            for _ in 0..(xorshift(&mut seed) % 4) {
+                                if v.len() < 2 {
+                                    break;
+                                }
+                                let i = (xorshift(&mut seed) as usize) % (v.len() - 1);
+                                match xorshift(&mut seed) % 4 {
+                                    0 => v.swap(i, i + 1),
+                                    1 => {
+                                        v.remove(i);
+                                    }
+                                    2 => v.insert(i, alphabet[0]),
+                                    _ => v[i] = alphabet[alphabet.len() - 1],
+                                }
+                            }
+                            v.into_iter().collect()
+                        };
+                        let (ca, cb): (Vec<char>, Vec<char>) =
+                            (a.chars().collect(), b.chars().collect());
+                        let d = osa_ref(&ca, &cb);
+                        for k in [0, 1, 2, 3, d.saturating_sub(1), d, d + 1, usize::MAX] {
+                            let expected = (d <= k).then_some(d);
+                            assert_eq!(
+                                damerau_levenshtein_osa(&a, &b, k),
+                                expected,
+                                "a={a:?} b={b:?} k={k}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+//###
+
+/*
+
+type Row = SmallVec<[usize; 128]>;
+
+//the edit distance can't be less than the difference of the lengths of the strings.
+//if a.chars().count().abs_diff(b_len)> max_distance {return -1;}
+//shorter string first for potential optimizations
+//remove common prefix and suffix to potentially reduce the problem size
+
+/// Damerau-Levenshtein edit distance, like Levenshtein but allows for adjacent transpositions.
+/// Implements Banded OSA Damerau-Levenshtein (Ukkonen, 1985) with row-minimum early termination
+/// Optimal string alignment version (OSA): each substring can only be edited once.
+/// E.g., "CA" to "ABC" has an edit distance of 2 by for Damerau-Levenshtein, but a distance of 3 when using the optimal string alignment algorithm.
+/// Returns Some(distance) if distance <= k, else None. Distance representing the number of edits required to transform one string to the other,
+/// https://en.wikipedia.org/wiki/Damerau%E2%80%93Levenshtein_distance#Optimal_string_alignment_distance
+#[inline]
+pub fn damerau_levenshtein_osa_fallback(s1: &str, s2: &str, k: usize) -> Option<usize> {
+    // decode each string exactly once
+    let a_buf: SmallVec<[char; 64]> = s1.chars().collect();
+    let b_buf: SmallVec<[char; 64]> = s2.chars().collect();
+    let (mut a, mut b) = (&a_buf[..], &b_buf[..]);
+
+    // strip common prefix / suffix
+    let p = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    a = &a[p..];
+    b = &b[p..];
+    let s = a.iter().rev().zip(b.iter().rev()).take_while(|(x, y)| x == y).count();
+    a = &a[..a.len() - s];
+    b = &b[..b.len() - s];
+
+    let (m, n) = (a.len(), b.len());
+    if m.abs_diff(n) > k {
+        return None;
+    }
+    if m == 0 {
+        return Some(n);
+    }
+    if n == 0 {
+        return Some(m);
+    }
+
+    let inf = k + 1; // sentinel meaning "greater than k"
+    let mut prev2: Row = smallvec![inf; n + 1];
+    let mut prev: Row = (0..=n).map(|j| min(j, inf)).collect(); // row 0
+    let mut curr: Row = smallvec![inf; n + 1];
+
+    for i in 1..=m {
+        // only cells with |i - j| <= k can have a value <= k
+        let lo = max(1, i.saturating_sub(k));
+        let hi = min(n, i + k);
+
+        curr[lo - 1] = if lo == 1 { min(i, inf) } else { inf }; // left border / sentinel
+        let mut row_min = curr[lo - 1];
+        let a_ch = a[i - 1];
+
+        for j in lo..=hi {
+            let cost = (a_ch != b[j - 1]) as usize;
+            let mut v = min(min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
+            if i > 1 && j > 1 && a_ch == b[j - 2] && a[i - 2] == b[j - 1] {
+                v = min(v, prev2[j - 2] + 1); // OSA transposition
+            }
+            curr[j] = v;
+            row_min = min(row_min, v);
+        }
+
+        // row minima never decrease, so a whole row above k means the result is above k
+        if row_min > k {
+            return None;
+        }
+        // right sentinel: the next row reads prev[hi + 1]
+        if hi < n {
+            curr[hi + 1] = inf;
+        }
+
+        mem::swap(&mut prev2, &mut prev);
+        mem::swap(&mut prev, &mut curr);
+    }
+
+    (prev[n] <= k).then_some(prev[n])
+}
+*/
 
 const MAX_PATTERN: usize = 64;
 
@@ -214,9 +568,9 @@ const MAX_PATTERN: usize = 64;
 fn damerau_levenshtein_osa_bitparallel_u8(a: &[u8], b: &[u8], k: usize) -> Option<usize> {
     // preconditions: 1 <= a.len() <= 64, b.len() >= 1, after prefix/suffix strip
     let m = a.len();
-    let mut pm = [0u64; 256]; // reuse a scratch buffer if you call this in a hot loop
+    let mut pm = [0u64; 128]; // reuse a scratch buffer if you call this in a hot loop
     for (i, &c) in a.iter().enumerate() {
-        pm[c as usize] |= 1u64 << i;
+        pm[(c & 0x7f) as usize] |= 1u64 << i;
     }
 
     let mut vp = !0u64;
@@ -228,7 +582,7 @@ fn damerau_levenshtein_osa_bitparallel_u8(a: &[u8], b: &[u8], k: usize) -> Optio
     let n = b.len();
 
     for (j, &c) in b.iter().enumerate() {
-        let pm_j = pm[c as usize];
+        let pm_j = pm[(c & 0x7f) as usize];
         let tr = ((!d0 & pm_j) << 1) & pm_old;
         d0 = ((pm_j & vp).wrapping_add(vp) ^ vp) | pm_j | vn | tr;
 
@@ -310,7 +664,7 @@ fn osa_bitparallel_chars<I: Iterator<Item = char>>(
         dist -= ((hn & last) != 0) as usize;
 
         // D[m][j] can decrease by at most 1 per remaining column
-        if dist > k + (n - 1 - j) {
+        if dist > k.saturating_add(n - 1 - j) {
             return None;
         }
 
@@ -367,7 +721,7 @@ pub fn damerau_levenshtein_osa_bitparallel_chars(s1: &str, s2: &str, k: usize) -
     let (pat_s, text_s, n) = if l1 <= l2 { (s1, s2, l2) } else { (s2, s1, l1) };
     let m = min(l1, l2);
     if m > MAX_PATTERN {
-        return damerau_levenshtein_osa_fallback(s1, s2, k); // your existing implementation
+        return damerau_levenshtein_osa_fallback(s1, s2, k);
     }
 
     let mut pat = ['\0'; MAX_PATTERN];
@@ -380,7 +734,16 @@ pub fn damerau_levenshtein_osa_bitparallel_chars(s1: &str, s2: &str, k: usize) -
 
 //wrapper
 
-/// Calculates the real OSA Damerau-Levenshtein distance with UTF-8 support.
+/// Calculates the Damerau-Levenshtein edit distance, like Levenshtein but allows for adjacent transpositions.
+/// Optimal string alignment version (OSA): each substring can only be edited once.
+/// E.g., "CA" to "ABC" has an edit distance of 2 by for Damerau-Levenshtein, but a distance of 3 when using the optimal string alignment algorithm.
+/// Returns the edit distance, >= 0 representing the number of edits required to transform one string to the other,
+/// or None if the distance is greater than the specified max_distance.
+/// https://en.wikipedia.org/wiki/Damerau%E2%80%93Levenshtein_distance#Optimal_string_alignment_distance
+/// With UTF-8 support and k as the maximum allowed edit distance for early termination.
+/// Uses the Bit-parallel OSA (Hyyrö 2003) for speed when the shorter string has <= 64 characters.
+/// Otherwise, falls back to a standard UTF-8 char-based implementation.
+/// When both strings are ASCII use an even faster u8-based bit-parallel implementation if the shorter string has <= 64 characters.
 pub fn damerau_levenshtein_osa(s1: &str, s2: &str, k: usize) -> Option<usize> {
     if s1.is_ascii() && s2.is_ascii() {
         let (mut a, mut b) = (s1.as_bytes(), s2.as_bytes());
@@ -410,11 +773,13 @@ pub fn damerau_levenshtein_osa(s1: &str, s2: &str, k: usize) -> Option<usize> {
 
         // the pattern must be the one that fits in 64 bits
         let (a, b) = if a.len() <= b.len() { (a, b) } else { (b, a) };
-        if a.len() <= 64 {
+        if a.len() <= MAX_PATTERN {
             return damerau_levenshtein_osa_bitparallel_u8(a, b, k);
+        } else {
+            return damerau_levenshtein_osa_fallback(&s1[p..s1.len() - s], &s2[p..s2.len() - s], k);
         }
     }
-    // non-ASCII or >64: your existing char-based path (see below)
+    // UTF-8 char-based path
     damerau_levenshtein_osa_bitparallel_chars(s1, s2, k)
 }
 
