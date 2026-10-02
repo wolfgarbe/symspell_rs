@@ -25,7 +25,7 @@ If you like SymSpell, try [**SeekStorm**](https://github.com/SeekStorm/SeekStorm
 
 ```text
 Copyright (c) 2025 Wolf Garbe
-Version: 6.7.3
+Version: 7.0.0
 Author: Wolf Garbe <wolf.garbe@seekstorm.com>
 Maintainer: Wolf Garbe <wolf.garbe@seekstorm.com>
 URL: https://github.com/wolfgarbe/symspell
