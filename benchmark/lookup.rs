@@ -1,5 +1,5 @@
-use divan::counter::ItemsCount;
 use divan::Bencher;
+use divan::counter::ItemsCount;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
@@ -89,7 +89,9 @@ macro_rules! engine {
                         "Closest" => Verbosity::Closest,
                         _ => Verbosity::All,
                     };
-                    n += s.lookup(q, v, c.max_edit_distance, &None, None, false).len();
+                    n += s
+                        .lookup(q, v, c.max_edit_distance, &None, None, false)
+                        .len();
                 }
                 n
             }
@@ -106,7 +108,13 @@ fn configs() -> Vec<Config> {
             for max_edit_distance in [1, 2, 3] {
                 for verbosity in ["Top", "Closest", "All"] {
                     for version in [CURRENT_VERSION, OLD_VERSION] {
-                        v.push(Config { dict, max_edit_distance, prefix_length, verbosity, version });
+                        v.push(Config {
+                            dict,
+                            max_edit_distance,
+                            prefix_length,
+                            verbosity,
+                            version,
+                        });
                     }
                 }
             }
@@ -116,7 +124,9 @@ fn configs() -> Vec<Config> {
 }
 
 fn data_path(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmark/test_data").join(name)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("benchmark/test_data")
+        .join(name)
 }
 
 fn queries() -> Arc<Vec<String>> {
@@ -174,7 +184,11 @@ fn dictionaries(c: &Config) -> (Arc<current::SymSpell>, Arc<old::SymSpell>) {
 
     let cur = Arc::new(build_measured(CURRENT_VERSION, c, current::build));
     let old = Arc::new(build_measured(OLD_VERSION, c, old::build));
-    *g = Some(Loaded { key, current: cur.clone(), old: old.clone() });
+    *g = Some(Loaded {
+        key,
+        current: cur.clone(),
+        old: old.clone(),
+    });
     (cur, old)
 }
 
@@ -208,7 +222,10 @@ fn lookup(bencher: Bencher, c: &Config) {
     PEAK.store(base, Relaxed);
     let t = Instant::now();
     std::hint::black_box(run(&qs));
-    let stats = Stats { avg: t.elapsed() / qs.len() as u32, peak: PEAK.load(Relaxed) - base };
+    let stats = Stats {
+        avg: t.elapsed() / qs.len() as u32,
+        peak: PEAK.load(Relaxed) - base,
+    };
     eprint!(
         "[{} prefix={} ed={} {} {}] avg latency {:.2?}/lookup, peak lookup alloc {} B",
         c.dict, c.prefix_length, c.max_edit_distance, c.verbosity, c.version, stats.avg, stats.peak,
@@ -226,7 +243,9 @@ fn lookup(bencher: Bencher, c: &Config) {
         );
     }
 
-    bencher.counter(ItemsCount::new(qs.len())).bench_local(|| run(&qs));
+    bencher
+        .counter(ItemsCount::new(qs.len()))
+        .bench_local(|| run(&qs));
 }
 
 fn main() {

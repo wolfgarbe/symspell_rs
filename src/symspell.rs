@@ -34,8 +34,8 @@ use smallvec::{SmallVec, smallvec};
 use std::cmp::{self, Ordering, min};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry as MapEntry;
-use std::hash::{BuildHasherDefault, Hasher};
 use std::fs::File;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
@@ -1907,12 +1907,7 @@ impl SymSpell {
             // then editdistance>maxEditDistance and no need for Levenshtein calculation
             // (inputLen >= prefixLength) && (suggestionLen >= prefixLength)
             } else if if both_ascii {
-                self.has_different_suffix_ascii(
-                    ctx.max_term_edit_distance,
-                    ib,
-                    candidate_len,
-                    sb,
-                )
+                self.has_different_suffix_ascii(ctx.max_term_edit_distance, ib, candidate_len, sb)
             } else {
                 self.has_different_suffix(
                     ctx.max_term_edit_distance,
@@ -1945,12 +1940,13 @@ impl SymSpell {
                     continue;
                 }
 
-                distance =
-                    if let Some(distance) = damerau_levenshtein_osa(input, suggestion, max_edit_distance2) {
-                        distance
-                    } else {
-                        continue;
-                    };
+                distance = if let Some(distance) =
+                    damerau_levenshtein_osa(input, suggestion, max_edit_distance2)
+                {
+                    distance
+                } else {
+                    continue;
+                };
             }
 
             //save some time
@@ -2054,12 +2050,12 @@ impl SymSpell {
         let input_len = input.len();
         let suggestion_len = suggestion.len();
 
-        let min = if self.prefix_length as isize - max_edit_distance as isize == candidate_len as isize
-        {
-            cmp::min(input_len, suggestion_len) as isize - self.prefix_length as isize
-        } else {
-            0
-        };
+        let min =
+            if self.prefix_length as isize - max_edit_distance as isize == candidate_len as isize {
+                cmp::min(input_len, suggestion_len) as isize - self.prefix_length as isize
+            } else {
+                0
+            };
 
         (self.prefix_length as isize - max_edit_distance as isize == candidate_len as isize)
             && (((min - self.prefix_length as isize) > 1)
@@ -2590,8 +2586,8 @@ impl SymSpell {
         let id = match self.words.get(term.as_str()) {
             Some(&id) => id,
             None => {
-                let id = u32::try_from(self.terms.len())
-                    .expect("dictionary exceeds u32::MAX terms");
+                let id =
+                    u32::try_from(self.terms.len()).expect("dictionary exceeds u32::MAX terms");
                 self.words.insert(term.clone().into_boxed_str(), id);
                 self.terms.push(Term {
                     text: term.clone().into_boxed_str(),
