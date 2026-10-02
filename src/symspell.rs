@@ -32,6 +32,9 @@ use ahash::{AHashMap, AHashSet};
 use itertools::Itertools;
 use smallvec::{SmallVec, smallvec};
 use std::cmp::{self, Ordering, min};
+use std::collections::HashMap;
+use std::collections::hash_map::Entry as MapEntry;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
@@ -1002,6 +1005,258 @@ pub enum Verbosity {
     All,
 }
 
+// ---------------------------------------------------------------------------
+// Dictionary storage types
+// ---------------------------------------------------------------------------
+
+/// Hasher for keys that already are well-distributed 32-bit hashes (the delete hashes).
+/// Re-hashing them with a full-strength hasher is wasted work on the lookup hot path.
+/// A single multiplicative (Fibonacci) mix is enough: it spreads the entropy into the
+/// upper bits, which hashbrown uses as the 7-bit control tag. A pure identity hasher must
+/// NOT be used here, because it would leave the control-tag bits constant.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct PrehashedU32(u64);
+
+impl Hasher for PrehashedU32 {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    #[inline]
+    fn write_u32(&mut self, i: u32) {
+        self.0 = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+    // fallback, only used if the map is ever keyed by something other than u32
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(5) ^ b as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+    }
+}
+
+const ASCII_FLAG: u32 = 1 << 31;
+
+/// One entry of a delete bucket: a reference to the dictionary term the delete was derived from.
+/// Instead of a heap copy of the term per delete (the old `Box<str>`), an entry is 8 bytes:
+/// the term id, the term length in chars and an "is ASCII" flag.
+/// The length and ASCII flag allow rejecting most entries without touching the term string.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+struct DeleteEntry {
+    id: u32,
+    len_flags: u32,
+}
+
+impl DeleteEntry {
+    #[inline]
+    fn new(id: u32, len: usize, ascii: bool) -> Self {
+        debug_assert!(len < ASCII_FLAG as usize);
+        Self {
+            id,
+            len_flags: len as u32 | if ascii { ASCII_FLAG } else { 0 },
+        }
+    }
+
+    /// Term length in chars.
+    #[inline]
+    fn len(self) -> usize {
+        (self.len_flags & !ASCII_FLAG) as usize
+    }
+
+    #[inline]
+    fn is_ascii(self) -> bool {
+        self.len_flags & ASCII_FLAG != 0
+    }
+}
+
+/// A dictionary term with its frequency count, addressed by term id.
+#[derive(Clone, PartialEq, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+struct Term {
+    text: Box<str>,
+    count: usize,
+}
+
+type DeleteMap = HashMap<u32, Vec<DeleteEntry>, BuildHasherDefault<PrehashedU32>>;
+
+// ---------------------------------------------------------------------------
+// lookup() internals
+// ---------------------------------------------------------------------------
+
+/// Longest prefix_length (in chars) supported by the allocation-free ASCII fast path.
+const MAX_STACK_PREFIX_LENGTH: usize = 32;
+/// Up to this number of candidates duplicates are detected by linear scan, beyond by hash table.
+const LINEAR_DEDUP_MAX: usize = 48;
+
+/// A candidate (input prefix or a delete of it) on the stack, ASCII fast path only.
+#[derive(Clone, Copy)]
+struct Cand {
+    buf: [u8; MAX_STACK_PREFIX_LENGTH],
+    len: u8,
+    hash: u32,
+}
+
+impl Cand {
+    #[inline]
+    fn new(bytes: &[u8]) -> Self {
+        let mut buf = [0u8; MAX_STACK_PREFIX_LENGTH];
+        buf[..bytes.len()].copy_from_slice(bytes);
+        Cand {
+            buf,
+            len: bytes.len() as u8,
+            hash: hash32(bytes),
+        }
+    }
+
+    /// The candidate with the char at position `i` removed.
+    #[inline]
+    fn deleted(&self, i: usize) -> Self {
+        let n = self.len as usize;
+        let mut buf = [0u8; MAX_STACK_PREFIX_LENGTH];
+        buf[..i].copy_from_slice(&self.buf[..i]);
+        buf[i..n - 1].copy_from_slice(&self.buf[i + 1..n]);
+        Cand {
+            buf,
+            len: (n - 1) as u8,
+            hash: hash32(&buf[..n - 1]),
+        }
+    }
+
+    #[inline]
+    fn same(&self, other: &Cand) -> bool {
+        self.hash == other.hash
+            && self.len == other.len
+            && self.buf[..self.len as usize] == other.buf[..other.len as usize]
+    }
+}
+
+/// Duplicate detection for generated candidates: linear scan while the candidate list is short
+/// (typical: <= 29 candidates for edit distance 2 / prefix length 7), open-addressing hash table
+/// of candidate indices beyond that, so that large edit distance / prefix configurations
+/// do not become quadratic.
+#[derive(Default)]
+struct CandDedup {
+    table: Vec<u32>, // candidate index + 1, 0 = empty slot
+    mask: usize,
+}
+
+impl CandDedup {
+    fn rebuild(&mut self, cands: &[Cand], size: usize) {
+        self.table = vec![0; size];
+        self.mask = size - 1;
+        for (idx, c) in cands.iter().enumerate() {
+            let mut i = c.hash as usize & self.mask;
+            while self.table[i] != 0 {
+                i = (i + 1) & self.mask;
+            }
+            self.table[i] = idx as u32 + 1;
+        }
+    }
+
+    /// Append `cand` to `cands` unless an identical candidate is already present.
+    #[inline]
+    fn push_unique(&mut self, cands: &mut SmallVec<[Cand; 64]>, cand: Cand) {
+        if self.table.is_empty() {
+            if cands.len() < LINEAR_DEDUP_MAX {
+                if !cands.iter().any(|c| c.same(&cand)) {
+                    cands.push(cand);
+                }
+                return;
+            }
+            let size = (cands.len() * 4).next_power_of_two().max(256);
+            self.rebuild(cands, size);
+        } else if (cands.len() + 1) * 2 > self.table.len() {
+            let size = self.table.len() * 2;
+            self.rebuild(cands, size);
+        }
+        let mut i = cand.hash as usize & self.mask;
+        loop {
+            let slot = self.table[i];
+            if slot == 0 {
+                self.table[i] = cands.len() as u32 + 1;
+                cands.push(cand);
+                return;
+            }
+            if cands[slot as usize - 1].same(&cand) {
+                return;
+            }
+            i = (i + 1) & self.mask;
+        }
+    }
+}
+
+/// Set of already verified term ids. Small and allocation-free for the typical case,
+/// spills into a hash set for large result sets (e.g. Verbosity::All).
+struct SeenIds {
+    small: SmallVec<[u32; 24]>,
+    set: AHashSet<u32>,
+}
+
+impl SeenIds {
+    fn new() -> Self {
+        Self {
+            small: SmallVec::new(),
+            set: AHashSet::new(),
+        }
+    }
+
+    #[inline]
+    fn contains(&self, id: u32) -> bool {
+        if self.set.is_empty() {
+            self.small.contains(&id)
+        } else {
+            self.set.contains(&id)
+        }
+    }
+
+    /// Returns true if the id was not yet present.
+    #[inline]
+    fn insert(&mut self, id: u32) -> bool {
+        if !self.set.is_empty() {
+            return self.set.insert(id);
+        }
+        if self.small.contains(&id) {
+            return false;
+        }
+        if self.small.len() == self.small.inline_size() {
+            self.set.extend(self.small.drain(..));
+            self.set.insert(id);
+        } else {
+            self.small.push(id);
+        }
+        true
+    }
+}
+
+/// A suggestion found during lookup, borrowing nothing: the term text is only materialized
+/// (allocated) for the suggestions that are actually returned.
+#[derive(Clone, Copy)]
+struct Hit {
+    id: u32,
+    /// the exact input match: returned with the case of the input
+    is_input: bool,
+    distance: usize,
+    count: usize,
+}
+
+struct LookupState {
+    hits: SmallVec<[Hit; 8]>,
+    seen: SeenIds,
+    /// shrinks while better suggestions are found (Verbosity::Top / Closest)
+    max_edit_distance2: usize,
+}
+
+struct LookupCtx<'a> {
+    input: &'a str,
+    ib: &'a [u8],
+    input_len: usize,
+    input_ascii: bool,
+    input_prefix_len: usize,
+    max_term_edit_distance: usize,
+    verbosity: &'a Verbosity,
+}
+
 #[derive(PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// SymSpell spell checker and corrector.
@@ -1029,9 +1284,12 @@ pub struct SymSpell {
     /// of the original words and the deletes derived from them. Collisions of hashCodes is tolerated,
     /// because suggestions are ultimately verified via an edit distance function.
     /// A list of suggestions might have a single suggestion, or multiple suggestions.
-    deletes: AHashMap<u32, Vec<Box<str>>>,
-    // Dictionary of unique correct spelling words, and the frequency count for each word.
-    words: AHashMap<Box<str>, usize>,
+    /// The suggestions are compact entries referencing a term in `terms` by id (instead of a heap copy of the term).
+    deletes: DeleteMap,
+    /// Dictionary of unique correct spelling words, mapping each word to its id (index into `terms`).
+    words: AHashMap<Box<str>, u32>,
+    /// Term table indexed by term id: the word and its frequency count.
+    terms: Vec<Term>,
     /// Bigrams optionally used for improved correction quality in lookup_coompound
     bigrams: AHashMap<Box<str>, usize>,
     /// Minimum bigram count in the bigram dictionary
@@ -1092,8 +1350,9 @@ impl SymSpell {
             count_threshold,              //1
             corpus_word_count: 1_024_908_267_229,
             max_dictionary_term_length: 0,
-            deletes: AHashMap::new(),
+            deletes: DeleteMap::default(),
             words: AHashMap::new(),
+            terms: Vec::new(),
             bigrams: AHashMap::new(),
             bigram_min_count: usize::MAX,
         }
@@ -1120,12 +1379,12 @@ impl SymSpell {
         let file = File::create(path)?;
         let mut writer = BufWriter::new(file);
 
-        for (entry, count) in self
-            .words
+        for term in self
+            .terms
             .iter()
-            .sorted_unstable_by(|a, b| Ord::cmp(&b.1, &a.1))
+            .sorted_unstable_by(|a, b| Ord::cmp(&b.count, &a.count))
         {
-            writeln!(writer, "{}{}{}", entry, separator, count)?;
+            writeln!(writer, "{}{}{}", term.text, separator, term.count)?;
         }
         writer.flush()?;
 
@@ -1285,27 +1544,183 @@ impl SymSpell {
             println!("max_edit_distance is bigger than max_dictionary_edit_distance");
         }
 
-        //len(input)
-        //check it for all term lengths vs check it only for current length? eigentlich reicht current, aber dann taucht der fehler später wieder auf
+        // ASCII input (the common case): allocation-free, byte-based fast path.
+        // Non-ASCII input: char-based path. Both return identical results.
+        if input.is_ascii() && self.prefix_length <= MAX_STACK_PREFIX_LENGTH {
+            self.lookup_ascii(
+                input,
+                verbosity,
+                max_edit_distance,
+                term_length_threshold,
+                max_results,
+                preserve_case,
+            )
+        } else {
+            self.lookup_unicode(
+                input,
+                verbosity,
+                max_edit_distance,
+                term_length_threshold,
+                max_results,
+                preserve_case,
+            )
+        }
+    }
 
+    /// max_term_edit_distance dependent on term_length_threshold
+    fn max_term_edit_distance_for(
+        term_length_threshold: &Option<Vec<usize>>,
+        max_edit_distance: usize,
+        term_len: usize,
+    ) -> usize {
+        term_length_threshold
+            .as_ref()
+            .map_or(max_edit_distance, |term_length_threshold| {
+                let mut max_term_edit_distance = 0;
+                for (i, threshold) in term_length_threshold.iter().enumerate() {
+                    if term_len >= *threshold {
+                        max_term_edit_distance = max_edit_distance + i
+                    } else {
+                        break;
+                    }
+                }
+                max_term_edit_distance
+            })
+    }
+
+    /// lookup() for ASCII input: candidates live on the stack, no per-candidate heap allocation.
+    fn lookup_ascii(
+        &self,
+        input: &str,
+        verbosity: Verbosity,
+        max_edit_distance: usize,
+        term_length_threshold: &Option<Vec<usize>>,
+        max_results: Option<usize>,
+        preserve_case: bool,
+    ) -> Vec<Suggestion> {
+        let max_term_edit_distance =
+            Self::max_term_edit_distance_for(term_length_threshold, max_edit_distance, input.len());
+
+        // allocate only if there is something to lowercase
+        let input_lowered;
+        let input_given = input;
+        let input: &str = if input.bytes().any(|b| b.is_ascii_uppercase()) {
+            input_lowered = input.to_ascii_lowercase();
+            &input_lowered
+        } else {
+            input
+        };
+        let input_original_case = if preserve_case { input_given } else { input };
+        let ib = input.as_bytes();
+        let input_len = ib.len();
+
+        // early termination - word is too big to possibly match any words
+        if input_len as isize - max_term_edit_distance as isize
+            > self.max_dictionary_term_length as isize
+        {
+            return Vec::new();
+        }
+
+        let mut hits: SmallVec<[Hit; 8]> = SmallVec::new();
+        if let Some(&id) = self.words.get(input) {
+            hits.push(Hit {
+                id,
+                is_input: true,
+                distance: 0,
+                count: self.terms[id as usize].count,
+            });
+            // early termination - return exact match, unless caller wants all matches
+            if verbosity != Verbosity::All {
+                return self.finish(hits, input_original_case, preserve_case, max_results);
+            }
+        }
+
+        //early termination, if we only want to check if word in dictionary or get its frequency e.g. for word segmentation
+        if max_term_edit_distance == 0 {
+            return self.finish(hits, input_original_case, preserve_case, max_results);
+        }
+
+        let input_prefix_len = min(input_len, self.prefix_length);
+        let ctx = LookupCtx {
+            input,
+            ib,
+            input_len,
+            input_ascii: true,
+            input_prefix_len,
+            max_term_edit_distance,
+            verbosity: &verbosity,
+        };
+        let mut st = LookupState {
+            hits,
+            seen: SeenIds::new(),
+            max_edit_distance2: max_term_edit_distance,
+        };
+
+        let mut cands: SmallVec<[Cand; 64]> = SmallVec::new();
+        let mut dedup = CandDedup::default();
+        cands.push(Cand::new(&ib[..input_prefix_len]));
+
+        let mut candidate_pointer = 0;
+        while candidate_pointer < cands.len() {
+            let cand = cands[candidate_pointer];
+            candidate_pointer += 1;
+            let candidate_len = cand.len as usize;
+            let cb = &cand.buf[..candidate_len];
+            let length_diff = input_prefix_len as isize - candidate_len as isize;
+
+            //save some time - early termination
+            //if canddate distance is already higher than suggestion distance, than there are no better suggestions to be expected
+            if length_diff > st.max_edit_distance2 as isize {
+                // skip to next candidate if Verbosity.All, look no further if Verbosity.Top or Closest
+                // (candidates are ordered by delete distance, so none are closer than current)
+                if verbosity == Verbosity::All {
+                    continue;
+                }
+                break;
+            }
+
+            //read candidate entry from dictionary
+            if let Some(bucket) = self.deletes.get(&cand.hash) {
+                self.process_bucket(&mut st, bucket, &ctx, cb, candidate_len);
+            }
+
+            //add edits
+            //derive edits (deletes) from candidate (input) and add them to candidates list
+            //this is a recursive process until the maximum edit distance has been reached
+            if length_diff < max_term_edit_distance as isize && candidate_len <= self.prefix_length
+            {
+                //save some time
+                //do not create edits with edit distance smaller than suggestions already found
+                if verbosity != Verbosity::All && length_diff >= st.max_edit_distance2 as isize {
+                    continue;
+                }
+
+                for i in 0..candidate_len {
+                    // deleting any char of a run of identical chars yields the same string
+                    if i > 0 && cb[i] == cb[i - 1] {
+                        continue;
+                    }
+                    dedup.push_unique(&mut cands, cand.deleted(i));
+                }
+            }
+        }
+
+        self.finish(st.hits, input_original_case, preserve_case, max_results)
+    }
+
+    /// lookup() for non-ASCII input (or prefix_length > 32): char-based candidates.
+    fn lookup_unicode(
+        &self,
+        input: &str,
+        verbosity: Verbosity,
+        max_edit_distance: usize,
+        term_length_threshold: &Option<Vec<usize>>,
+        max_results: Option<usize>,
+        preserve_case: bool,
+    ) -> Vec<Suggestion> {
         //max_term_edit_distance dependent on term_length_threshold
         let max_term_edit_distance =
-            term_length_threshold
-                .as_ref()
-                .map_or(max_edit_distance, |term_length_threshold| {
-                    let term_len = len(input);
-                    let mut max_term_edit_distance = 0;
-                    for (i, threshold) in term_length_threshold.iter().enumerate() {
-                        if term_len >= *threshold {
-                            max_term_edit_distance = max_edit_distance + i
-                        } else {
-                            break;
-                        }
-                    }
-                    max_term_edit_distance
-                });
-
-        let mut suggestions: Vec<Suggestion> = Vec::new();
+            Self::max_term_edit_distance_for(term_length_threshold, max_edit_distance, len(input));
 
         let input_lower_case = input.to_lowercase();
         let input_original_case = if preserve_case {
@@ -1320,34 +1735,33 @@ impl SymSpell {
         if input_len as isize - max_term_edit_distance as isize
             > self.max_dictionary_term_length as isize
         {
-            return suggestions;
+            return Vec::new();
         }
 
-        let mut hashset1: AHashSet<String> = AHashSet::new();
-        let mut hashset2: AHashSet<String> = AHashSet::new();
-
-        if self.words.contains_key(input) {
-            let suggestion_count = self.words[input];
-            suggestions.push(Suggestion::new(input_original_case, 0, suggestion_count));
+        let mut hits: SmallVec<[Hit; 8]> = SmallVec::new();
+        if let Some(&id) = self.words.get(input) {
+            hits.push(Hit {
+                id,
+                is_input: true,
+                distance: 0,
+                count: self.terms[id as usize].count,
+            });
             // early termination - return exact match, unless caller wants all matches
             if verbosity != Verbosity::All {
-                return suggestions;
+                return self.finish(hits, input_original_case, preserve_case, max_results);
             }
         }
 
         //early termination, if we only want to check if word in dictionary or get its frequency e.g. for word segmentation
         if max_term_edit_distance == 0 {
-            return suggestions;
+            return self.finish(hits, input_original_case, preserve_case, max_results);
         }
 
-        hashset2.insert(input.to_string());
-
-        let mut max_edit_distance2 = max_term_edit_distance;
         let mut candidate_pointer = 0;
-        let mut candidates = Vec::new();
+        let mut candidates: Vec<String> = Vec::new();
+        let mut hashset1: AHashSet<String> = AHashSet::new();
 
         let mut input_prefix_len = input_len;
-
         if input_prefix_len > self.prefix_length {
             input_prefix_len = self.prefix_length;
             candidates.push(slice(input, 0, input_prefix_len));
@@ -1355,17 +1769,29 @@ impl SymSpell {
             candidates.push(input.to_string());
         }
 
+        let ctx = LookupCtx {
+            input,
+            ib: input.as_bytes(),
+            input_len,
+            input_ascii: false,
+            input_prefix_len,
+            max_term_edit_distance,
+            verbosity: &verbosity,
+        };
+        let mut st = LookupState {
+            hits,
+            seen: SeenIds::new(),
+            max_edit_distance2: max_term_edit_distance,
+        };
+
         while candidate_pointer < candidates.len() {
-            let candidate = &candidates.get(candidate_pointer).unwrap().clone();
+            // each candidate is visited exactly once: move it out instead of cloning it
+            let candidate = std::mem::take(&mut candidates[candidate_pointer]);
             candidate_pointer += 1;
-            let candidate_len = len(candidate);
+            let candidate_len = len(&candidate);
             let length_diff = input_prefix_len as isize - candidate_len as isize;
 
-            //save some time - early termination
-            //if canddate distance is already higher than suggestion distance, than there are no better suggestions to be expected
-            if length_diff > max_edit_distance2 as isize {
-                // skip to next candidate if Verbosity.All, look no further if Verbosity.Top or Closest
-                // (candidates are ordered by delete distance, so none are closer than current)
+            if length_diff > st.max_edit_distance2 as isize {
                 if verbosity == Verbosity::All {
                     continue;
                 }
@@ -1374,147 +1800,19 @@ impl SymSpell {
 
             //read candidate entry from dictionary
             let hash = hash32(candidate.as_bytes());
-            if self.deletes.contains_key(&hash) {
-                let dict_suggestions = &self.deletes[&hash];
-
-                //iterate through suggestions (to other correct dictionary items) of delete item and add them to suggestion list
-                for suggestion in dict_suggestions {
-                    let suggestion_len = len(suggestion);
-
-                    if suggestion.as_ref() == input {
-                        continue;
-                    }
-
-                    if suggestion_len.abs_diff(input_len) > max_edit_distance2
-                        || suggestion_len < candidate_len
-                        || (suggestion_len == candidate_len && suggestion.as_ref() != candidate)
-                    {
-                        continue;
-                    }
-
-                    let sugg_prefix_len = min(suggestion_len, self.prefix_length);
-
-                    if sugg_prefix_len > input_prefix_len
-                        && sugg_prefix_len - candidate_len > max_edit_distance2
-                    {
-                        continue;
-                    }
-
-                    //Damerau-Levenshtein Edit Distance: adjust distance, if both distances>0
-                    //We allow simultaneous edits (deletes) of maxEditDistance on on both the dictionary and the input term.
-                    //For replaces and adjacent transposes the resulting edit distance stays <= maxEditDistance.
-                    //For inserts and deletes the resulting edit distance might exceed maxEditDistance.
-                    //To prevent suggestions of a higher edit distance, we need to calculate the resulting edit distance, if there are simultaneous edits on both sides.
-                    //Example: (bank==bnak and bank==bink, but bank!=kanb and bank!=xban and bank!=baxn for maxEditDistance=1)
-                    //Two deletes on each side of a pair makes them all equal, but the first two pairs have edit distance=1, the others edit distance=2.
-                    let distance;
-                    if candidate_len == 0 {
-                        //suggestions which have no common chars with input (inputLen<=maxEditDistance && suggestionLen<=maxEditDistance)
-                        distance = cmp::max(input_len, suggestion_len);
-
-                        if distance > max_edit_distance2 || hashset2.contains(suggestion.as_ref()) {
-                            continue;
-                        }
-                        hashset2.insert(suggestion.to_string());
-                    } else if suggestion_len == 1 {
-                        distance = if !input.contains(&slice(suggestion, 0, 1)) {
-                            input_len
-                        } else {
-                            input_len - 1
-                        };
-
-                        if distance > max_edit_distance2 || hashset2.contains(suggestion.as_ref()) {
-                            continue;
-                        }
-
-                        hashset2.insert(suggestion.to_string());
-                    // number of edits in prefix ==maxediddistance  AND no identic suffix,
-                    // then editdistance>maxEditDistance and no need for Levenshtein calculation
-                    // (inputLen >= prefixLength) && (suggestionLen >= prefixLength)
-                    } else if self.has_different_suffix(
-                        max_term_edit_distance,
-                        input,
-                        input_len,
-                        candidate_len,
-                        suggestion,
-                        suggestion_len,
-                    ) {
-                        continue;
-                    } else {
-                        // DeleteInSuggestionPrefix is somewhat expensive, and only pays off when verbosity is Top or Closest.
-                        if verbosity != Verbosity::All
-                            && !self.delete_in_suggestion_prefix(
-                                candidate,
-                                candidate_len,
-                                suggestion,
-                                suggestion_len,
-                            )
-                        {
-                            continue;
-                        }
-
-                        if hashset2.contains(suggestion.as_ref()) {
-                            continue;
-                        }
-                        hashset2.insert(suggestion.to_string());
-
-                        distance = if let Some(distance) =
-                            damerau_levenshtein_osa(input, suggestion, max_edit_distance2)
-                        {
-                            distance
-                        } else {
-                            continue;
-                        };
-                    }
-                    //save some time
-                    //do not process higher distances than those already found, if verbosity<All (note: maxEditDistance2 will always equal maxEditDistance when Verbosity::All)
-                    if distance <= max_edit_distance2 {
-                        let suggestion_count = self.words[suggestion];
-                        let si = Suggestion::new(suggestion.as_ref(), distance, suggestion_count);
-
-                        if !suggestions.is_empty() {
-                            match verbosity {
-                                Verbosity::Closest => {
-                                    //we will calculate DamLev distance only to the smallest found distance so far
-                                    if distance < max_edit_distance2 {
-                                        suggestions.clear();
-                                    }
-                                }
-                                Verbosity::Top => {
-                                    if distance < max_edit_distance2
-                                        || suggestion_count > suggestions[0].count
-                                    {
-                                        max_edit_distance2 = distance;
-                                        suggestions[0] = si;
-                                    }
-                                    continue;
-                                }
-                                _ => (),
-                            }
-                        }
-
-                        if verbosity != Verbosity::All {
-                            max_edit_distance2 = distance;
-                        }
-
-                        suggestions.push(si);
-                    }
-                }
+            if let Some(bucket) = self.deletes.get(&hash) {
+                self.process_bucket(&mut st, bucket, &ctx, candidate.as_bytes(), candidate_len);
             }
 
             //add edits
-            //derive edits (deletes) from candidate (input) and add them to candidates list
-            //this is a recursive process until the maximum edit distance has been reached
             if length_diff < max_term_edit_distance as isize && candidate_len <= self.prefix_length
             {
-                //save some time
-                //do not create edits with edit distance smaller than suggestions already found
-                if verbosity != Verbosity::All && length_diff >= max_edit_distance2 as isize {
+                if verbosity != Verbosity::All && length_diff >= st.max_edit_distance2 as isize {
                     continue;
                 }
 
                 for i in 0..candidate_len {
-                    let delete = remove(candidate, i);
+                    let delete = remove(&candidate, i);
 
                     if !hashset1.contains(&delete) {
                         hashset1.insert(delete.clone());
@@ -1524,22 +1822,277 @@ impl SymSpell {
             }
         }
 
-        //sort by ascending edit distance, then by descending word frequency
-        if suggestions.len() > 1 {
-            suggestions.sort_unstable();
-        }
+        self.finish(st.hits, input_original_case, preserve_case, max_results)
+    }
 
-        //transfer case from input to suggestion
-        if preserve_case {
-            for suggestion in suggestions.iter_mut() {
-                suggestion.term = transfer_case(input_original_case, &suggestion.term);
+    /// Verify all terms of one delete bucket against the input, update hits.
+    /// Shared by the ASCII and the Unicode path. `cb` is the UTF-8 encoding of the candidate.
+    #[inline]
+    fn process_bucket(
+        &self,
+        st: &mut LookupState,
+        bucket: &[DeleteEntry],
+        ctx: &LookupCtx,
+        cb: &[u8],
+        candidate_len: usize,
+    ) {
+        let input = ctx.input;
+        let ib = ctx.ib;
+        let input_len = ctx.input_len;
+        let verbosity = ctx.verbosity;
+        let mut max_edit_distance2 = st.max_edit_distance2;
+
+        //iterate through suggestions (to other correct dictionary items) of delete item and add them to suggestion list
+        for e in bucket {
+            let suggestion_len = e.len();
+
+            // cheap rejections first: they only need the entry, not the term string
+            if suggestion_len.abs_diff(input_len) > max_edit_distance2
+                || suggestion_len < candidate_len
+            {
+                continue;
+            }
+
+            let term = &self.terms[e.id as usize];
+            let suggestion: &str = &term.text;
+            let sb = suggestion.as_bytes();
+
+            if suggestion_len == input_len && sb == ib {
+                continue;
+            }
+            if suggestion_len == candidate_len && sb != cb {
+                continue;
+            }
+
+            let sugg_prefix_len = min(suggestion_len, self.prefix_length);
+
+            if sugg_prefix_len > ctx.input_prefix_len
+                && sugg_prefix_len - candidate_len > max_edit_distance2
+            {
+                continue;
+            }
+
+            // byte-based helpers are only valid if input (and with it the candidate) and suggestion are ASCII
+            let both_ascii = ctx.input_ascii && e.is_ascii();
+
+            //Damerau-Levenshtein Edit Distance: adjust distance, if both distances>0
+            //We allow simultaneous edits (deletes) of maxEditDistance on on both the dictionary and the input term.
+            //For replaces and adjacent transposes the resulting edit distance stays <= maxEditDistance.
+            //For inserts and deletes the resulting edit distance might exceed maxEditDistance.
+            //To prevent suggestions of a higher edit distance, we need to calculate the resulting edit distance, if there are simultaneous edits on both sides.
+            //Example: (bank==bnak and bank==bink, but bank!=kanb and bank!=xban and bank!=baxn for maxEditDistance=1)
+            //Two deletes on each side of a pair makes them all equal, but the first two pairs have edit distance=1, the others edit distance=2.
+            let distance;
+            if candidate_len == 0 {
+                //suggestions which have no common chars with input (inputLen<=maxEditDistance && suggestionLen<=maxEditDistance)
+                distance = cmp::max(input_len, suggestion_len);
+
+                if distance > max_edit_distance2 || st.seen.contains(e.id) {
+                    continue;
+                }
+                st.seen.insert(e.id);
+            } else if suggestion_len == 1 {
+                let first = suggestion.chars().next().unwrap();
+                distance = if !input.contains(first) {
+                    input_len
+                } else {
+                    input_len - 1
+                };
+
+                if distance > max_edit_distance2 || st.seen.contains(e.id) {
+                    continue;
+                }
+                st.seen.insert(e.id);
+            // number of edits in prefix ==maxediddistance  AND no identic suffix,
+            // then editdistance>maxEditDistance and no need for Levenshtein calculation
+            // (inputLen >= prefixLength) && (suggestionLen >= prefixLength)
+            } else if if both_ascii {
+                self.has_different_suffix_ascii(
+                    ctx.max_term_edit_distance,
+                    ib,
+                    candidate_len,
+                    sb,
+                )
+            } else {
+                self.has_different_suffix(
+                    ctx.max_term_edit_distance,
+                    input,
+                    input_len,
+                    candidate_len,
+                    suggestion,
+                    suggestion_len,
+                )
+            } {
+                continue;
+            } else {
+                // DeleteInSuggestionPrefix is somewhat expensive, and only pays off when verbosity is Top or Closest.
+                if *verbosity != Verbosity::All
+                    && !(if both_ascii {
+                        self.delete_in_suggestion_prefix_ascii(cb, sb)
+                    } else {
+                        self.delete_in_suggestion_prefix(
+                            std::str::from_utf8(cb).unwrap(),
+                            candidate_len,
+                            suggestion,
+                            suggestion_len,
+                        )
+                    })
+                {
+                    continue;
+                }
+
+                if !st.seen.insert(e.id) {
+                    continue;
+                }
+
+                distance =
+                    if let Some(distance) = damerau_levenshtein_osa(input, suggestion, max_edit_distance2) {
+                        distance
+                    } else {
+                        continue;
+                    };
+            }
+
+            //save some time
+            //do not process higher distances than those already found, if verbosity<All (note: maxEditDistance2 will always equal maxEditDistance when Verbosity::All)
+            if distance <= max_edit_distance2 {
+                let suggestion_count = term.count;
+                let si = Hit {
+                    id: e.id,
+                    is_input: false,
+                    distance,
+                    count: suggestion_count,
+                };
+
+                if !st.hits.is_empty() {
+                    match verbosity {
+                        Verbosity::Closest => {
+                            //we will calculate DamLev distance only to the smallest found distance so far
+                            if distance < max_edit_distance2 {
+                                st.hits.clear();
+                            }
+                        }
+                        Verbosity::Top => {
+                            if distance < max_edit_distance2 || suggestion_count > st.hits[0].count
+                            {
+                                max_edit_distance2 = distance;
+                                st.hits[0] = si;
+                            }
+                            continue;
+                        }
+                        _ => (),
+                    }
+                }
+
+                if *verbosity != Verbosity::All {
+                    max_edit_distance2 = distance;
+                }
+
+                st.hits.push(si);
             }
         }
 
+        st.max_edit_distance2 = max_edit_distance2;
+    }
+
+    /// Sort, truncate to max_results and only now materialize the (few) result strings.
+    fn finish(
+        &self,
+        mut hits: SmallVec<[Hit; 8]>,
+        input_original_case: &str,
+        preserve_case: bool,
+        max_results: Option<usize>,
+    ) -> Vec<Suggestion> {
+        //sort by ascending edit distance, then by descending word frequency
+        if hits.len() > 1 {
+            hits.sort_unstable_by(|a, b| {
+                a.distance
+                    .cmp(&b.distance)
+                    .then_with(|| b.count.cmp(&a.count))
+            });
+        }
+
         if let Some(max_results) = max_results {
-            suggestions.truncate(max_results);
+            hits.truncate(max_results);
+        }
+
+        let mut suggestions = Vec::with_capacity(hits.len());
+        for hit in hits {
+            let term: &str = if hit.is_input {
+                input_original_case
+            } else {
+                &self.terms[hit.id as usize].text
+            };
+            //transfer case from input to suggestion
+            let term = if preserve_case {
+                transfer_case(input_original_case, term)
+            } else {
+                term.to_string()
+            };
+            suggestions.push(Suggestion::new(term, hit.distance, hit.count));
         }
         suggestions
+    }
+
+    /// Byte-based variant of has_different_suffix(), for ASCII input and ASCII suggestion
+    /// (char-based `at()`/`suffix()` are O(n) per call and allocate).
+    fn has_different_suffix_ascii(
+        &self,
+        max_edit_distance: usize,
+        input: &[u8],
+        candidate_len: usize,
+        suggestion: &[u8],
+    ) -> bool {
+        #[inline]
+        fn at_b(s: &[u8], i: isize) -> Option<u8> {
+            if i < 0 || i as usize >= s.len() {
+                None
+            } else {
+                Some(s[i as usize])
+            }
+        }
+        let input_len = input.len();
+        let suggestion_len = suggestion.len();
+
+        let min = if self.prefix_length as isize - max_edit_distance as isize == candidate_len as isize
+        {
+            cmp::min(input_len, suggestion_len) as isize - self.prefix_length as isize
+        } else {
+            0
+        };
+
+        (self.prefix_length as isize - max_edit_distance as isize == candidate_len as isize)
+            && (((min - self.prefix_length as isize) > 1)
+                && (input.get(input_len + 1 - min as usize..).unwrap_or(&[])
+                    != suggestion
+                        .get(suggestion_len + 1 - min as usize..)
+                        .unwrap_or(&[])))
+            || ((min > 0)
+                && (at_b(input, (input_len - min as usize) as isize)
+                    != at_b(suggestion, (suggestion_len - min as usize) as isize))
+                && ((at_b(input, (input_len - min as usize - 1) as isize)
+                    != at_b(suggestion, (suggestion_len - min as usize) as isize))
+                    || (at_b(input, (input_len - min as usize) as isize)
+                        != at_b(suggestion, (suggestion_len - min as usize - 1) as isize))))
+    }
+
+    /// Byte-based variant of delete_in_suggestion_prefix(), for ASCII delete and ASCII suggestion.
+    #[inline]
+    fn delete_in_suggestion_prefix_ascii(&self, delete: &[u8], suggestion: &[u8]) -> bool {
+        if delete.is_empty() {
+            return true;
+        }
+        let suggestion_len = min(self.prefix_length, suggestion.len());
+        let mut j = 0;
+        for &del_char in delete {
+            while j < suggestion_len && del_char != suggestion[j] {
+                j += 1;
+            }
+            if j == suggestion_len {
+                return false;
+            }
+        }
+        true
     }
 
     /// Find suggested spellings for a multi-word input string (supports word splitting/merging).
@@ -2034,7 +2587,20 @@ impl SymSpell {
     {
         let term = term.as_ref().to_lowercase();
         // update words
-        let entry = self.words.entry(term.clone().into_boxed_str()).or_insert(0);
+        let id = match self.words.get(term.as_str()) {
+            Some(&id) => id,
+            None => {
+                let id = u32::try_from(self.terms.len())
+                    .expect("dictionary exceeds u32::MAX terms");
+                self.words.insert(term.clone().into_boxed_str(), id);
+                self.terms.push(Term {
+                    text: term.clone().into_boxed_str(),
+                    count: 0,
+                });
+                id
+            }
+        };
+        let entry = &mut self.terms[id as usize].count;
         if *entry == 0 {
             *entry = count;
             if count < self.count_threshold {
@@ -2090,15 +2656,24 @@ impl SymSpell {
             self.max_dictionary_term_length = term_len;
         }
 
+        // the term length is stored in 31 bits of the delete entry
+        if term_len >= ASCII_FLAG as usize {
+            return false;
+        }
+
         let edits = self.edits_prefix(term.as_ref(), max_term_edit_distance);
 
+        let delete_entry = DeleteEntry::new(id, term_len, term.is_ascii());
         for delete in edits {
             let delete_hash = hash32(delete.as_bytes());
 
-            self.deletes
-                .entry(delete_hash)
-                .and_modify(|e| e.push(term.clone().into_boxed_str()))
-                .or_insert_with(|| vec![term.clone().into_boxed_str()]);
+            match self.deletes.entry(delete_hash) {
+                MapEntry::Occupied(bucket) => bucket.into_mut().push(delete_entry),
+                // exact capacity for the (most common) single-entry bucket
+                MapEntry::Vacant(slot) => {
+                    slot.insert(vec![delete_entry]);
+                }
+            }
         }
 
         true

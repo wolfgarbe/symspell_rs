@@ -1,6 +1,6 @@
 [package]
 name = "symspell_rs"
-version = "6.9.1"
+version = "7.0.0"
 authors = ["Wolf Garbe <Wolf Garbe wolf.garbe@seekstorm.com>"]
 license = "MIT"
 categories = ["database-implementations", "data-structures"]
@@ -29,6 +29,15 @@ gxhash = { version = "3.5.0", features = ["deterministic"], optional = true }
 smallvec = "1.16.2"
 unicode-normalization = "0.1.25"
 itertools = "0.15.0"
+
+[dev-dependencies]
+divan = "0.1"
+symspell_old = { package = "symspell_rs", version = "=6.8.4" }
+
+[[bench]]
+name = "lookup"
+path = "benchmark/lookup.rs"
+harness = false
 
 [workspace.lints.rust]
 missing_docs = "warn"

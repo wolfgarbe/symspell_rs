@@ -74,7 +74,7 @@ All: All suggestions within maxEditDistance, suggestions ordered by edit distanc
 ![Benchmark](https://cdn-images-1.medium.com/max/800/1*1l_5pOYU3AhoijKfVD-Qag.png "Benchmark")
 <br><br>
 **1,870 times faster than [BK-tree](https://en.wikipedia.org/wiki/BK-tree)** (see [Benchmark 1](https://seekstorm.com/blog/symspell-vs-bk-tree/): dictionary size=500,000, maximum edit distance=3, query terms with random edit distance = 0...maximum edit distance, verbose=0)<br><br>
-**1 million times faster than [Norvig's algorithm](http://norvig.com/spell-correct.html)** (see [Benchmark 2](http://blog.faroo.com/2015/03/24/fast-approximate-string-matching-with-large-edit-distances/): dictionary size=29,157, maximum edit distance=3, query terms with fixed edit distance = maximum edit distance, verbose=0)<br>
+**1 million times faster than [Norvig's algorithm](http://norvig.com/spell-correct.html)** (see [Benchmark 2](https://seekstorm.com/blog/fast-approximate-string-matching/): dictionary size=29,157, maximum edit distance=3, query terms with fixed edit distance = maximum edit distance, verbose=0)<br>
 
 #### Blog Posts: Algorithm, Benchmarks, Applications
 [1000x Faster Spelling Correction algorithm](https://seekstorm.com/blog/1000x-spelling-correction/)<br>
@@ -328,7 +328,7 @@ https://crates.io/crates/symspell_rs
 
 The following third party ports or reimplementations to other programming languages have not been tested by myself whether they are an exact port, error free, provide identical results or are as fast as the original algorithm. 
 
-Older ports target SymSpell **version 3.0**. But **version 6.1.** provides **much higher speed & lower memory consumption!**
+Older ports target SymSpell **version 3.0**. But **version 6.1.** and then **version 7.0.** provides **much higher speed & lower memory consumption!**
 
 **WebAssembly**<br>
 https://github.com/justinwilaby/spellchecker-wasm<br>
@@ -402,7 +402,7 @@ https://github.com/PhilT/symspell<br>
 https://github.com/scientist-labs/spellkit
 
 **Rust**<br>
-https://github.com/wolfgarbe/symspell_rs (Version 6.7.3)<br>
+https://github.com/wolfgarbe/symspell_rs (Version 7.0)<br>
 https://github.com/reneklacan/symspell (Version 6.6, compiles to WebAssembly)<br>
 https://github.com/luketpeterson/fuzzy_rocks (persistent datastore backed by RocksDB)<br>
 https://github.com/daibo83/fast_symspell<br>

@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.0.0] - 2026-10-02
+
+### Added
+- `lookup` benchmark (`benchmark/lookup.rs`) based on [divan](https://github.com/nvzqz/divan). Run it with `cargo bench`.
+- Queries: the first term of each line of `benchmark/test_data/noisy_query_en_1000.txt` (1000 misspelled terms).
+- Experiments (162 in total): the 30k, 82k and 500k English frequency dictionaries × `prefix_length` 5, 6, 7 × maximum edit distance 1, 2, 3 × `Verbosity` Top, Closest, All × {this version, [symspell_rs 6.8.4](https://crates.io/crates/symspell_rs/6.8.4)}. The dictionary is rebuilt for each maximum edit distance (maximum dictionary edit distance = maximum edit distance). 6.8.4 is pulled in as the dev-dependency `symspell_old`.
+- Measured per experiment: the time of one pass over all queries (reported by divan as items/s), the average latency per `lookup()`, and the peak heap allocation during lookups (via a tracking global allocator).
+- Measured per dictionary build: build time, resident memory and peak memory during the build, for both versions.
+- After each 6.8.4 run, the benchmark prints the latency speedup and the peak-allocation ratio of this version relative to 6.8.4.
+- The average latency and memory figures are printed to stderr next to the divan output.
+- Run a subset with a divan filter, e.g. `cargo bench -- 82_765`.
+
+### Performance: 3x faster lookup, 40% less memory consumption.
+
+- **Faster lookups in every experiment.** All 81 lookup experiments are faster, by a geometric mean of **2.8×** (range 1.5× to 5.9×).
+  - `Verbosity::Top`: 3.0× on average (1.8× to 5.9×)
+  - `Verbosity::Closest`: 2.9× on average (1.5× to 4.2×)
+  - `Verbosity::All`: 2.7× on average (1.6× to 4.8×)
+  - max edit distance 1: 2.4× on average (1.5× to 3.7×)
+  - max edit distance 2: 2.8× on average (2.1× to 5.2×)
+  - max edit distance 3: 3.4× on average (1.8× to 5.9×)
+  - 30,000-word dictionary: 2.9× on average (1.5× to 4.8×)
+  - 82,765-word dictionary: 3.0× on average (1.8× to 5.9×)
+  - 500,000-word dictionary: 2.6× on average (1.6× to 3.5×)
+- **Much lower memory use during lookups.** Peak heap allocation per lookup is on average only **31%** of v6.8.4 (best case 17%, worst case 77%).
+  - `Verbosity::Top`: 18% of v6.8.4 on average (17% to 18%)
+  - `Verbosity::Closest`: 32% of v6.8.4 on average (18% to 73%)
+  - `Verbosity::All`: 52% of v6.8.4 on average (33% to 77%)
+- **Roughly 40% less memory for the dictionary.** Resident memory after the build is on average **62%** of v6.8.4 (best case 48%, worst case 83%). Peak memory during the build is on average **64%** of v6.8.4 (48% to 88%).
+  - Largest example, 500k dictionary, prefix 7, edit distance 3: resident memory 874 MiB → 436 MiB, peak 874 MiB → 436 MiB, build time 14.20 s → 12.60 s.
+- See [detailed benchmark results](benchmark\results\RESULTS.md).
+
+### Changed
+- Internal storage: `words` now maps terms to ids, and counts live in a new term table. Serialized dictionaries from previous versions (`serde` feature) are not compatible.
+- The derived `PartialEq` on `SymSpell` compares term ids, so dictionaries with the same content but a different insertion order compare unequal.
+- ASCII input now takes an allocation-free fast path: stack-based candidates, borrowed hits, and `Suggestion` strings created only for the returned results (after sort and `max_results`). Non-ASCII input uses a char-based path that shares the same verification code.
+- Delete buckets store compact 8-byte entries (term id, length, ASCII flag) that refer to a shared term table, instead of a heap copy of the term per delete. This lowers memory use and removes pointer chasing.
+- The `deletes` map uses a lightweight hasher, since its keys are already 32-bit hashes.
+
 ## [6.9.1] - 2026-10-01
 
 ### Improved
