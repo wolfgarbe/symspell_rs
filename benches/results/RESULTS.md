@@ -1,9 +1,15 @@
-# symspell_rs v7.0.0 - 3x faster lookup, 40% less memory consumption.
+# symspell_rs v7.0.1 - 3x faster lookup, 40% less memory consumption, 11x faster Damerau-Levenshtein edit distance.
 
-There have been both significant implementation changes to SymSpell as well as algorithmical changes to the Damerau-Levenshtein calculation between v6.8.4 vs. v7.0.0.  
+There have been both significant implementation changes to SymSpell as well as algorithmic changes to the Damerau-Levenshtein calculation between v6.8.4 vs. v7.0.1.  
 The resulting performance improvements are measured with the **new benchmark suite** and discussed below.
 
 ## Changes
+
+### Improved Damerau-Levenshtein calculation, optimal string alignment (OSA) variant
+
+- Optimized SymSpell v7.0.1 `damerau_levenshtein_osa` by using **bit-parallel OSA ([Hyyrö 2003](https://www.sciencedirect.com/science/article/pii/S157086670400053X/pdf))**, making it **11x faster** than SymSpell v6.8.4 `damerau_levenshtein_osa`.
+- Optimized SymSpell v7.0.1 `damerau_levenshtein_osa_fallback` by using the **multi-word block version** of the **bit-parallel OSA ([Hyyrö 2003](https://www.sciencedirect.com/science/article/pii/S157086670400053X/pdf))**, to cover any length., making it **7x faster** than than SymSpell v6.8.4 `damerau_levenshtein_osa` for terms > 64 chars.
+- Exposed `damerau_levenshtein_osa` as a public method for standalone use.
 
 ### Improved SymSpell implementation: internal storage, allocation free, shared term table, lightweight hasher
 
@@ -13,19 +19,20 @@ The resulting performance improvements are measured with the **new benchmark sui
 - Delete buckets store compact 8-byte entries (term id, length, ASCII flag) that refer to a shared term table, instead of a heap copy of the term per delete. This lowers memory use and removes pointer chasing.
 - The `deletes` map uses a lightweight hasher, since its keys are already 32-bit hashes.
 
-### Improved Damerau-Levenshtein calculation, optimal string alignment (OSA) variant
-
-- Optimized `damerau_levenshtein_osa` by using **bit-parallel OSA (Hyyrö 2003)**, making it **8x faster** than `strsim.osa_distance`.
-- Optimized `damerau_levenshtein_osa_fallback` by using the **multi-word block version** of the **bit-parallel algorithm (Hyyrö 2003)**, to cover any length., making it **5x faster** than `strsim.osa_distance` for terms > 64 chars.
-
-
-## Benchmark setup
+## Verbose Benchmark setup
 
 - Benchmark harness: [divan](https://github.com/nvzqz/divan) with a tracking global allocator. Results below are the figures printed to stderr by the benchmark.
 - 81 lookup experiments per version: English frequency dictionaries with 30k, 82k and 500k entries × `prefix_length` 5, 6, 7 × maximum edit distance 1, 2, 3 × `Verbosity` Top, Closest, All. The dictionary is rebuilt for each maximum edit distance (maximum dictionary edit distance = maximum edit distance), which gives 27 dictionary builds per version.
 - **Average latency** = average time per `lookup()` call. **Speedup** = latency of v6.8.4 ÷ latency of current (higher is better).
 - **Build time** = time to build the dictionary. **Resident memory** = resident memory after the build. **Peak memory** = maximum memory consumption during the build.
 - Charts use a logarithmic y-axis where values span orders of magnitude (latency, build memory across dictionary sizes).
+- **Verbose benchmark** based on [divan](https://github.com/nvzqz/divan): `cargo bench --bench verbose  --features gxhash`
+
+## Basic benchmark setup 
+  - Lookup latency experiments (162 in total): the 30k, 82k and 500k English frequency dictionaries × `prefix_length` 5, 6, 7 × maximum edit distance 1, 2, 3 × `Verbosity` Top, Closest, All × {this version, [symspell_rs 6.8.4](https://crates.io/crates/symspell_rs/6.8.4)}.
+  - Load dictionary time experiments (27 in total): the 30k, 82k and 500k English frequency dictionaries × `prefix_length` 5, 6, 7 × maximum edit distance 1, 2, 3
+  - Damerau-Levenshtein OSA latency experiments (6 in total): maximum edit distance 1, 2, 3 x bit-parallel OSA, multi-word block bit-parallel OSA
+  - **Basic benchmark**: `cargo bench --bench basic --features gxhash` 
 
 ### Test data
 
@@ -54,6 +61,12 @@ All three test data files are released on GitHub.
 
 ## Summary: what improved in the new version
 
+- **Faster Damerau-Levenshtein calculation**, (optimal string alignment (OSA) variant). All 3 Damerau-Levenshtein experiments are faster, by a geometric mean of **10.9×** (range 10.0× to 12.2×).
+  - `damerau_levenshtein_osa` using **bit-parallel OSA ([Hyyrö 2003](https://www.sciencedirect.com/science/article/pii/S157086670400053X/pdf))** (length <= 64 chars): 14.9x on average (10.0× to 12.2×)
+  - `damerau_levenshtein_osa_fallback` using the **multi-word block version** of the **bit-parallel algorithm ([Hyyrö 2003](https://www.sciencedirect.com/science/article/pii/S157086670400053X/pdf))** (any length): 6.9x faster on average (6.7x to 8.0x)
+  - max edit distance 1: 12.2× (OSA), 8.0 (OSA fallback)
+  - max edit distance 2: 10.6× (OSA), 6.2 (OSA fallback)
+  - max edit distance 3: 10.0× (OSA), 6.7 (OSA fallback)
 - **Faster lookups in every experiment.** All 81 lookup experiments are faster, by a geometric mean of **2.8×** (range 1.5× to 5.9×).
   - `Verbosity::Top`: 3.0× on average (1.8× to 5.9×)
   - `Verbosity::Closest`: 2.9× on average (1.5× to 4.2×)
@@ -71,6 +84,49 @@ All three test data files are released on GitHub.
 - **Roughly 40% less memory for the dictionary.** Resident memory after the build is on average **62%** of v6.8.4 (best case 48%, worst case 83%). Peak memory during the build is on average **64%** of v6.8.4 (48% to 88%).
   - Largest example, 500k dictionary, prefix 7, edit distance 3: resident memory 874 MiB → 436 MiB, peak 874 MiB → 436 MiB, build time 14.20 s → 12.60 s.
 - **Build time is on par or slightly better.** On average the build is 1.09× as fast as v6.8.4 (range 0.86× to 1.58×). 6 of 27 builds are marginally slower (at most 17%), so the memory savings come at no real build-time cost.
+
+### 💡 The interesting part: 
+In the first step, we improved the Damerau-Levenshtein calculation only, while letting the SymSpell implementation unchanged.
+An **11x faster edit distance** gave only a **20% speedup for SymSpell**. That told us two things:
+1️⃣ SymSpell's makes spelling correction latency largely independent of raw edit distance performance. The symmetric delete algorithm already avoids most of that work. 
+2️⃣ Further performance gains had to come from SeekStorm implementation improvements rather than edit distance calculation optimization. We did, and achieved **300% speedup for SymSpell**.
+
+## Damerau-Levenshtein (OSA) latency
+
+- strsim v0.11.1 **osa_distance** uses a vanilla implementation of the Damerau-Levenshtein algorithm.
+- SymSpell v6.8.4 **damerau_levenshtein_osa** uses a vanilla implementation of the Damerau-Levenshtein algorithm.
+- SymSpell v7.0.1 **damerau_levenshtein_osa** uses **bit-parallel OSA ([Hyyrö 2003](https://www.sciencedirect.com/science/article/pii/S157086670400053X/pdf))** (length <= 64 chars)
+- SymSpell v7.0.1 **damerau_levenshtein_osa_fallback** uses **multi-word block version** of the **bit-parallel OSA ([Hyyrö 2003](https://www.sciencedirect.com/science/article/pii/S157086670400053X/pdf))** (any length)
+
+| max edit distance | SymSpell v6.8.4 damerau_levenshtein_osa | SymSpell v7.0.1 damerau_levenshtein_osa | speedup |
+|---:|---:|---:|---:|
+| 1 | 173 ns | 14 ns | 12.18× |
+| 2 | 170 ns | 16 ns | 10.63× |
+| 3 | 178 ns | 17 ns | 10.04× |
+
+![damerau_levenshtein_osa latency](images/osa_symspell_v684_vs_v701.png)
+
+---
+
+| max edit distance | [strsim v0.11.1](https://github.com/rapidfuzz/strsim-rs) osa_distance | [SymSpell v7.0.1](https://github.com/wolfgarbe/symspell_rs/) damerau_levenshtein_osa | speedup |
+|---:|---:|---:|---:|
+| 1 | 169 ns | 14 ns | 11.89× |
+| 2 | 180 ns | 16 ns | 11.28× |
+| 3 | 181 ns | 17 ns | 10.22× |
+
+![damerau_levenshtein_osa latency](images/osa_strsim_vs_symspell_v701.png)
+
+---
+
+| max edit distance | SymSpell v6.8.4 damerau_levenshtein_osa | SymSpell v7.0.1 damerau_levenshtein_osa_fallback | speedup |
+|---:|---:|---:|---:|
+| 1 | 173 ns | 21 ns | 7.99× |
+| 2 | 170 ns | 27 ns | 6.17× |
+| 3 | 178 ns | 26 ns | 6.67× |
+
+![damerau_levenshtein_osa_fallback latency](images/osa_fallback_symspell_v684_vs_v701.png)
+
+*Using noisy_query_en_1000.txt, calculation the edit distance between misspelled_string and corrected_string, for the given maximum edit distance.*
 
 ## Lookup latency
 

@@ -64,7 +64,7 @@ struct Config {
     version: &'static str,
 }
 
-const CURRENT_VERSION: &str = "current";
+const CURRENT_VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 const OLD_VERSION: &str = "v6.8.4";
 
 /// Same API in both crates; `$krate` is the crate to benchmark.

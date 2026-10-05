@@ -56,8 +56,6 @@ use std::path::Path;
 use std::sync::LazyLock;
 use unicode_normalization::UnicodeNormalization;
 
-//####
-
 // 1. If compiling for x86_64 AND the user explicitly targeted AES/SSE2/NEON and the feature is explicitly requested, use gxhash
 #[cfg(any(
     all(
@@ -153,8 +151,6 @@ pub(crate) fn hash32(term_bytes: &[u8]) -> u32 {
 pub(crate) fn hash32(term_bytes: &[u8]) -> u32 {
     HASHER_32.hash_one(term_bytes) as u32
 }
-
-//###
 
 const WORD_BITS: usize = 64;
 type CharVec = SmallVec<[char; 64]>;
@@ -480,90 +476,6 @@ mod tests {
         }
     }
 }
-
-//###
-
-/*
-
-type Row = SmallVec<[usize; 128]>;
-
-//the edit distance can't be less than the difference of the lengths of the strings.
-//if a.chars().count().abs_diff(b_len)> max_distance {return -1;}
-//shorter string first for potential optimizations
-//remove common prefix and suffix to potentially reduce the problem size
-
-/// Damerau-Levenshtein edit distance, like Levenshtein but allows for adjacent transpositions.
-/// Implements Banded OSA Damerau-Levenshtein (Ukkonen, 1985) with row-minimum early termination
-/// Optimal string alignment version (OSA): each substring can only be edited once.
-/// E.g., "CA" to "ABC" has an edit distance of 2 by for Damerau-Levenshtein, but a distance of 3 when using the optimal string alignment algorithm.
-/// Returns Some(distance) if distance <= k, else None. Distance representing the number of edits required to transform one string to the other,
-/// https://en.wikipedia.org/wiki/Damerau%E2%80%93Levenshtein_distance#Optimal_string_alignment_distance
-#[inline]
-pub fn damerau_levenshtein_osa_fallback(s1: &str, s2: &str, k: usize) -> Option<usize> {
-    // decode each string exactly once
-    let a_buf: SmallVec<[char; 64]> = s1.chars().collect();
-    let b_buf: SmallVec<[char; 64]> = s2.chars().collect();
-    let (mut a, mut b) = (&a_buf[..], &b_buf[..]);
-
-    // strip common prefix / suffix
-    let p = a.iter().zip(b).take_while(|(x, y)| x == y).count();
-    a = &a[p..];
-    b = &b[p..];
-    let s = a.iter().rev().zip(b.iter().rev()).take_while(|(x, y)| x == y).count();
-    a = &a[..a.len() - s];
-    b = &b[..b.len() - s];
-
-    let (m, n) = (a.len(), b.len());
-    if m.abs_diff(n) > k {
-        return None;
-    }
-    if m == 0 {
-        return Some(n);
-    }
-    if n == 0 {
-        return Some(m);
-    }
-
-    let inf = k + 1; // sentinel meaning "greater than k"
-    let mut prev2: Row = smallvec![inf; n + 1];
-    let mut prev: Row = (0..=n).map(|j| min(j, inf)).collect(); // row 0
-    let mut curr: Row = smallvec![inf; n + 1];
-
-    for i in 1..=m {
-        // only cells with |i - j| <= k can have a value <= k
-        let lo = max(1, i.saturating_sub(k));
-        let hi = min(n, i + k);
-
-        curr[lo - 1] = if lo == 1 { min(i, inf) } else { inf }; // left border / sentinel
-        let mut row_min = curr[lo - 1];
-        let a_ch = a[i - 1];
-
-        for j in lo..=hi {
-            let cost = (a_ch != b[j - 1]) as usize;
-            let mut v = min(min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
-            if i > 1 && j > 1 && a_ch == b[j - 2] && a[i - 2] == b[j - 1] {
-                v = min(v, prev2[j - 2] + 1); // OSA transposition
-            }
-            curr[j] = v;
-            row_min = min(row_min, v);
-        }
-
-        // row minima never decrease, so a whole row above k means the result is above k
-        if row_min > k {
-            return None;
-        }
-        // right sentinel: the next row reads prev[hi + 1]
-        if hi < n {
-            curr[hi + 1] = inf;
-        }
-
-        mem::swap(&mut prev2, &mut prev);
-        mem::swap(&mut prev, &mut curr);
-    }
-
-    (prev[n] <= k).then_some(prev[n])
-}
-*/
 
 const MAX_PATTERN: usize = 64;
 

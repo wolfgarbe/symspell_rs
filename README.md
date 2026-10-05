@@ -25,7 +25,7 @@ If you like SymSpell, try [**SeekStorm**](https://github.com/SeekStorm/SeekStorm
 
 ```text
 Copyright (c) 2025 Wolf Garbe
-Version: 7.0.0
+Version: 7.0.1
 Author: Wolf Garbe <wolf.garbe@seekstorm.com>
 Maintainer: Wolf Garbe <wolf.garbe@seekstorm.com>
 URL: https://github.com/wolfgarbe/symspell
@@ -75,6 +75,16 @@ All: All suggestions within maxEditDistance, suggestions ordered by edit distanc
 <br><br>
 **1,870 times faster than [BK-tree](https://en.wikipedia.org/wiki/BK-tree)** (see [Benchmark 1](https://seekstorm.com/blog/symspell-vs-bk-tree/): dictionary size=500,000, maximum edit distance=3, query terms with random edit distance = 0...maximum edit distance, verbose=0)<br><br>
 **1 million times faster than [Norvig's algorithm](http://norvig.com/spell-correct.html)** (see [Benchmark 2](https://seekstorm.com/blog/fast-approximate-string-matching/): dictionary size=29,157, maximum edit distance=3, query terms with fixed edit distance = maximum edit distance, verbose=0)<br>
+
+**cargo bench**
+
+basic benchmark  
+`cargo bench --bench basic   --features gxhash` 
+
+verbose benchmark, including RAM consumption, based on [divan](https://github.com/nvzqz/divan).  
+`cargo bench --bench verbose  --features gxhash`
+
+*See [detailed benchmark results](benches\results\RESULTS.md), highlighting the performance improvements between v6.8.4 vs. v7.0.1.*
 
 #### Blog Posts: Algorithm, Benchmarks, Applications
 [1000x Faster Spelling Correction algorithm](https://seekstorm.com/blog/1000x-spelling-correction/)<br>

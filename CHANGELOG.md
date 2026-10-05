@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.0.1] - 2026-10-04
+
+### Added
+
+- New basic benchmark added 
+  - Lookup latency experiments (162 in total): the 30k, 82k and 500k English frequency dictionaries × `prefix_length` 5, 6, 7 × maximum edit distance 1, 2, 3 × `Verbosity` Top, Closest, All × {this version, [symspell_rs 6.8.4](https://crates.io/crates/symspell_rs/6.8.4)}.
+  - Load dictionary time experiments (27 in total): the 30k, 82k and 500k English frequency dictionaries × `prefix_length` 5, 6, 7 × maximum edit distance 1, 2, 3
+  - Damerau-Levenshtein OSA latency experiments (6 in total): maximum edit distance 1, 2, 3 x bit-parallel OSA, multi-word block bit-parallel OSA
+  - **Basic benchmark**: `cargo bench --bench basic   --features gxhash` 
+  - **Verbose benchmark**, including RAM consumption, based on [divan](https://github.com/nvzqz/divan): `cargo bench --bench verbose  --features gxhash`
+  - See [detailed benchmark results](benches\results\RESULTS.md).
+
 ## [7.0.0] - 2026-10-02
 
 ### Added
@@ -35,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `Verbosity::All`: 52% of v6.8.4 on average (33% to 77%)
 - **Roughly 40% less memory for the dictionary.** Resident memory after the build is on average **62%** of v6.8.4 (best case 48%, worst case 83%). Peak memory during the build is on average **64%** of v6.8.4 (48% to 88%).
   - Largest example, 500k dictionary, prefix 7, edit distance 3: resident memory 874 MiB → 436 MiB, peak 874 MiB → 436 MiB, build time 14.20 s → 12.60 s.
-- See [detailed benchmark results](benchmark\results\RESULTS.md).
+- See [detailed benchmark results](benches\results\RESULTS.md).
 
 ### Changed
 - Internal storage: `words` now maps terms to ids, and counts live in a new term table. Serialized dictionaries from previous versions (`serde` feature) are not compatible.
@@ -48,13 +60,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Improved
 
-- Optimized `damerau_levenshtein_osa_fallback` by using the **multi-word block version** of the **bit-parallel algorithm (Hyyrö 2003)**, to cover any length., making it **5x faster** than `strsim.osa_distance` for terms > 64 chars.
+- Optimized `damerau_levenshtein_osa_fallback` by using the **multi-word block version** of the **bit-parallel algorithm ([Hyyrö 2003](https://www.sciencedirect.com/science/article/pii/S157086670400053X/pdf))**, to cover any length, making it **6.9x faster** than `strsim.osa_distance` for terms > 64 chars.
 
 ## [6.9.0] - 2026-09-29
 
 ### Improved
 
-- Optimized `damerau_levenshtein_osa` by using **bit-parallel OSA (Hyyrö 2003)**, making it **8x faster** than `strsim.osa_distance` and boosting SymSpell lookup speeds by 20%.
+- Optimized `damerau_levenshtein_osa` by using **bit-parallel OSA ([Hyyrö 2003](https://www.sciencedirect.com/science/article/pii/S157086670400053X/pdf))**, making it **10.9x faster** than `strsim.osa_distance` and boosting SymSpell lookup speeds by 20%.
 - Exposed `damerau_levenshtein_osa` as a public method for standalone use.
 
 ## [6.8.4] - 2026-09-28

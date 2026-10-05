@@ -1,6 +1,6 @@
 [package]
 name = "symspell_rs"
-version = "7.0.0"
+version = "7.0.1"
 authors = ["Wolf Garbe <Wolf Garbe wolf.garbe@seekstorm.com>"]
 license = "MIT"
 categories = ["database-implementations", "data-structures"]
@@ -32,11 +32,19 @@ itertools = "0.15.0"
 
 [dev-dependencies]
 divan = "0.1"
-symspell_old = { package = "symspell_rs", version = "=6.8.4" }
+symspell_old = { package = "symspell_rs", version = "=6.8.4" , features = ["gxhash"] }
+strsim = "0.11.1"
+[target.'cfg(target_os = "windows")'.dependencies]
+winapi = { version = "0.3.9", features = ["winbase", "processthreadsapi"] }
 
 [[bench]]
-name = "lookup"
-path = "benchmark/lookup.rs"
+name = "verbose"
+path = "benches/verbose.rs"
+harness = false
+
+[[bench]]
+name = "basic"
+path = "benches/basic.rs"
 harness = false
 
 [workspace.lints.rust]
