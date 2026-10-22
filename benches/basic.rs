@@ -6,8 +6,6 @@ use std::time::{Duration, Instant};
 
 use strsim::osa_distance;
 
-//use symspell_old::*;
-
 #[path = "../src/symspell.rs"]
 mod symspell_new;
 
@@ -34,20 +32,6 @@ pub struct TestEntry {
 }
 
 fn main() {
-    // Fixes a 85% performance drop caused by a faulty Windows 11 24H2 software update,
-    // that changed the task scheduler behavior into under-utilizing the P-Cores over E-cores of Intel hybrid CPUs.
-    // This is a workaround until Microsoft fixes the issue in a future update.
-    // https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setpriorityclass
-    #[cfg(target_os = "windows")]
-    unsafe {
-        use winapi::um::{
-            processthreadsapi::SetPriorityClass, winbase::ABOVE_NORMAL_PRIORITY_CLASS,
-        };
-
-        let process = winapi::um::processthreadsapi::GetCurrentProcess();
-        SetPriorityClass(process, ABOVE_NORMAL_PRIORITY_CLASS);
-    }
-
     //### load queries
     let noisy_query_file = data_path("noisy_query_en_1000.txt");
     let mut test_entries: Vec<TestEntry> = Vec::new();
