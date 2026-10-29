@@ -87,6 +87,7 @@ verbose benchmark, including RAM consumption, based on [divan](https://github.co
 *See [detailed benchmark results](benches\results\RESULTS.md), highlighting the performance improvements between v6.8.4 vs. v7.0.1.*
 
 #### Blog Posts: Algorithm, Benchmarks, Applications
+[symspell_rs v7 - 3x faster lookup, 40% less memory consumption, 11x faster Damerau-Levenshtein edit distance](https://seekstorm.com/blog/symspell_rs-3x-faster-lookup-40-less-memory-11x-faster-levenshtein/)<br>
 [1000x Faster Spelling Correction algorithm](https://seekstorm.com/blog/1000x-spelling-correction/)<br>
 [Fast approximate string matching with large edit distances in Big Data](https://seekstorm.com/blog/fast-approximate-string-matching/)<br> 
 [Very fast Data cleaning of product names, company names & street names](https://seekstorm.com/blog/very-data-cleaning-of-product-names-company-names-street-names/)<br>
